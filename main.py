@@ -355,13 +355,17 @@ def download_spotify(update: Update, context: CallbackContext):
             track = data["data"]["track"]
             caption = f"🎵 {track['name']}\n🎤 {track['artists']}\n⏳ مدت: {track['duration']}"
             
+            duration_parts = track["duration"].split(":")
+            duration_seconds = int(duration_parts[0]) * 60 + int(duration_parts[1])
+            
             context.bot.send_audio(
                 chat_id=update.effective_chat.id,
                 audio=track["download_url"],
                 caption=caption,
                 title=track["name"],
                 performer=track["artists"],
-                duration=int(track["duration"].split(":")[0]) * 60 + int(track["duration"].split(":")[1])
+                duration=duration_seconds
+            )
         else:
             update.message.reply_text("⚠️ خطا در دریافت آهنگ اسپاتیفای. لطفا لینک را بررسی کنید.")
     except Exception as e:
