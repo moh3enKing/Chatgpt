@@ -2,13 +2,14 @@ import telebot
 from flask import Flask, request
 import requests
 from pymongo import MongoClient
+import time
 
 # ---------------------- تنظیمات ----------------------
 BOT_TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
+WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
 CHANNEL_USERNAME = "@netgoris"
 ADMIN_ID = 5637609683
 MONGO_URL = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
 
 # ---------------------- اتصال ----------------------
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -16,22 +17,22 @@ app = Flask(__name__)
 client = MongoClient(MONGO_URL)
 db = client["TellGPT"]
 users = db["users"]
+bans = db["bans"]
+spams = {}
 
-# ---------------------- وب‌هوک ----------------------
-@app.route('/', methods=["POST"])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return '', 200
-    return '', 403
+# ---------------------- کیبوردها ----------------------
+def main_keyboard():
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("💬 پشتیبانی", "📖 راهنما", "⚙️ پنل مدیریت")
+    return markup
 
-def set_webhook():
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
+def join_keyboard():
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(telebot.types.InlineKeyboardButton("🔗 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME.strip('@')}"))
+    markup.add(telebot.types.InlineKeyboardButton("✅ عضویت انجام شد", callback_data="check_join"))
+    return markup
 
-# ---------------------- جین اجباری ----------------------
+# ---------------------- بررسی عضویت ----------------------
 def is_user_joined(user_id):
     try:
         member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
@@ -39,85 +40,179 @@ def is_user_joined(user_id):
     except:
         return False
 
-# ---------------------- استارت ----------------------
-@bot.message_handler(commands=['start'])
-def start_handler(message):
-    user = users.find_one({"user_id": message.chat.id})
-    if not user:
-        users.insert_one({"user_id": message.chat.id})
-        bot.send_message(ADMIN_ID, f"🔔 کاربر جدید: [{message.chat.first_name}](tg://user?id={message.chat.id})", parse_mode="Markdown")
+# ---------------------- پیام راهنما ----------------------
+HELP_TEXT = """
+📌 راهنمای استفاده از ربات:
 
-    if not is_user_joined(message.chat.id):
-        markup = telebot.types.InlineKeyboardMarkup()
-        markup.add(telebot.types.InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}"))
-        markup.add(telebot.types.InlineKeyboardButton("✅ عضویت انجام شد", callback_data="check_join"))
-        bot.send_message(message.chat.id, "👋 برای استفاده از ربات ابتدا در کانال عضو شوید:", reply_markup=markup)
-    else:
-        show_main_menu(message.chat.id)
+✅ برای دریافت پاسخ از هوش مصنوعی، کافیست پیام خود را ارسال کنید.
 
-# ---------------------- بررسی عضویت ----------------------
-@bot.callback_query_handler(func=lambda call: call.data == "check_join")
+⚠️ قوانین:
+1. ارسال محتوای غیرمجاز یا تبلیغاتی ممنوع است.
+2. ابتدا باید در کانال عضو شوید.
+3. رعایت احترام الزامی است.
+4. ربات در صورت اسپم، تا 2 دقیقه پاسخ نمی‌دهد.
+
+🛠 پشتیبانی 24 ساعته: فقط از طریق دکمه "💬 پشتیبانی"
+
+🤖 با آرزوی تجربه‌ای جذاب با TellGPT
+"""
+
+# ---------------------- هندل استارت ----------------------
+@bot.message_handler(commands=["start"])
+def start(message):
+    if message.from_user.id in bans.distinct("user_id"):
+        return
+
+    if not is_user_joined(message.from_user.id):
+        bot.send_message(message.chat.id, f"برای استفاده از ربات ابتدا در کانال {CHANNEL_USERNAME} عضو شوید👇", reply_markup=join_keyboard())
+        return
+
+    if not users.find_one({"user_id": message.from_user.id}):
+        users.insert_one({"user_id": message.from_user.id})
+        bot.send_message(ADMIN_ID, f"🟢 کاربر جدید استارت زد:\n👤 {message.from_user.first_name} ({message.from_user.id})")
+
+    bot.send_message(message.chat.id, "به ربات TellGPT خوش آمدید! 👋", reply_markup=main_keyboard())
+
+# ---------------------- چک عضویت ----------------------
+@bot.callback_query_handler(func=lambda c: c.data == "check_join")
 def check_join(call):
     if is_user_joined(call.from_user.id):
         bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.send_message(call.from_user.id, "✅ خوش آمدید! از ربات لذت ببرید.")
-        show_main_menu(call.from_user.id)
+        bot.send_message(call.message.chat.id, "✅ عضویت شما تایید شد. از ربات لذت ببرید.", reply_markup=main_keyboard())
     else:
-        bot.answer_callback_query(call.id, "⚠️ ابتدا عضو کانال شوید.")
+        bot.answer_callback_query(call.id, "⚠️ هنوز عضو کانال نشدید!", show_alert=True)
 
-# ---------------------- منو اصلی ----------------------
-def show_main_menu(chat_id):
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("📚 راهنما", "💬 پشتیبانی")
-    bot.send_message(chat_id, "💡 خوش آمدید! لطفا یکی از گزینه‌ها را انتخاب کنید:", reply_markup=markup)
+# ---------------------- ضداسپم ----------------------
+@bot.message_handler(func=lambda m: True)
+def main_handler(message):
+    if message.from_user.id in bans.distinct("user_id"):
+        return
 
-# ---------------------- دکمه راهنما ----------------------
-@bot.message_handler(func=lambda msg: msg.text == "📚 راهنما")
-def guide_handler(message):
-    guide_text = (
-        "📖 راهنمای ربات TellGPT\n"
-        "✅ برای چت با هوش مصنوعی فقط متن ارسال کنید.\n"
-        "🎥 ارسال لینک اینستاگرام: دانلود مستقیم\n"
-        "🎧 ارسال لینک اسپاتیفای: دریافت آهنگ MP3\n"
-        "📌 ارسال لینک پینترست: دریافت تصویر\n"
-        "🖼 ارسال متن انگلیسی برای ساخت عکس\n"
-        "⚠️ قوانین:\n"
-        "- اسپم نکنید\n"
-        "- رعایت ادب الزامیست\n"
-    )
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("💡 بازگشت")
-    bot.send_message(message.chat.id, guide_text, reply_markup=markup)
+    if message.text == "📖 راهنما":
+        bot.send_message(message.chat.id, HELP_TEXT, reply_markup=main_keyboard())
+        return
 
-# ---------------------- بازگشت از راهنما ----------------------
-@bot.message_handler(func=lambda msg: msg.text == "💡 بازگشت")
-def back_to_menu(message):
-    show_main_menu(message.chat.id)
+    if message.text == "💬 پشتیبانی":
+        bot.send_message(message.chat.id, "لطفا پیام خود را ارسال کنید:", reply_markup=telebot.types.ReplyKeyboardRemove())
+        bot.register_next_step_handler(message, support_handler)
+        return
+
+    if message.text == "⚙️ پنل مدیریت" and message.from_user.id == ADMIN_ID:
+        bot.send_message(message.chat.id, "به پنل خوش آمدید:\n- /ban [ID] برای بن کردن\n- /unban [ID] برای آنبن", reply_markup=main_keyboard())
+        return
+
+    # ضد اسپم
+    now = time.time()
+    times = spams.get(message.from_user.id, [])
+    times = [t for t in times if now - t < 60]  # 1 دقیقه قبل
+    times.append(now)
+    spams[message.from_user.id] = times
+
+    if len(times) >= 4:
+        bans.insert_one({"user_id": message.from_user.id})
+        bot.send_message(message.chat.id, "🚫 به دلیل ارسال بیش از حد پیام، شما بن شدید.")
+        return
+
+    handle_services(message)
 
 # ---------------------- پشتیبانی ----------------------
-@bot.message_handler(func=lambda msg: msg.text == "💬 پشتیبانی")
 def support_handler(message):
-    bot.send_message(message.chat.id, "✍️ لطفاً پیام خود را ارسال کنید. برای لغو، بنویسید لغو.")
-    bot.register_next_step_handler(message, forward_to_admin)
+    bot.send_message(ADMIN_ID, f"📨 پیام جدید پشتیبانی:\nاز {message.from_user.id}:\n{message.text}")
+    bot.send_message(message.chat.id, "✅ پیام شما ارسال شد.", reply_markup=main_keyboard())
 
-def forward_to_admin(message):
-    if message.text.lower() == "لغو":
-        bot.send_message(message.chat.id, "❌ پشتیبانی لغو شد.")
-        show_main_menu(message.chat.id)
-    else:
-        bot.send_message(ADMIN_ID, f"📩 پیام جدید از [{message.from_user.first_name}](tg://user?id={message.chat.id}):\n{message.text}", parse_mode="Markdown")
-        bot.send_message(message.chat.id, "✅ پیام شما ارسال شد. منتظر پاسخ بمانید.")
-        show_main_menu(message.chat.id)
+@bot.message_handler(func=lambda m: m.reply_to_message and m.chat.id == ADMIN_ID)
+def reply_support(message):
+    try:
+        target_id = int(message.reply_to_message.text.split("از ")[1].split(":")[0])
+        bot.send_message(target_id, f"💬 پاسخ پشتیبانی:\n{message.text}")
+        bot.send_message(message.chat.id, "✅ پاسخ ارسال شد.")
+    except:
+        bot.send_message(message.chat.id, "❌ خطا در ارسال پاسخ.")
 
-# ---------------------- پاسخ مدیر ----------------------
-@bot.message_handler(func=lambda msg: msg.chat.id == ADMIN_ID and msg.reply_to_message)
-def reply_handler(message):
-    lines = message.reply_to_message.text.split("tg://user?id=")
-    if len(lines) > 1:
-        target_id = int(lines[1].split(")")[0])
-        bot.send_message(target_id, f"💬 پاسخ مدیر:\n{message.text}")
+# ---------------------- وب‌سرویس‌ها ----------------------
+def handle_services(message):
+    text = message.text
 
-# ---------------------- اجرای اصلی ----------------------
+    # تشخیص لینک و پاسخ‌دهی
+    if "instagram.com" in text:
+        res = requests.get(f"https://pouriam.top/eyephp/instagram?url={text}").json()
+        if res.get("links"):
+            for link in res["links"]:
+                bot.send_message(message.chat.id, link)
+        return
+
+    if "spotify.com" in text:
+        res = requests.get(f"http://api.cactus-dev.ir/spotify.php?url={text}").json()
+        if res.get("data", {}).get("download_url"):
+            bot.send_audio(message.chat.id, res["data"]["download_url"])
+        return
+
+    if "pin.it" in text or "pinterest.com" in text:
+        res = requests.get(f"https://haji.s2025h.space/pin/?url={text}&client_key=keyvip").json()
+        if res.get("download_url"):
+            bot.send_photo(message.chat.id, res["download_url"])
+        return
+
+    if text.startswith("/image "):
+        query = text.replace("/image ", "")
+        res = requests.get(f"https://v3.api-free.ir/image/?text={query}").json()
+        if res.get("result"):
+            bot.send_photo(message.chat.id, res["result"])
+        return
+
+    # وب‌سرویس هوش مصنوعی
+    for url in [
+        f"https://starsshoptl.ir/Ai/index.php?text={text}",
+        f"https://starsshoptl.ir/Ai/index.php?model=gpt&text={text}",
+        f"https://starsshoptl.ir/Ai/index.php?model=deepseek&text={text}"
+    ]:
+        try:
+            res = requests.get(url, timeout=5).text
+            if res:
+                bot.send_message(message.chat.id, res)
+                return
+        except:
+            continue
+
+    bot.send_message(message.chat.id, "❗️ لینک یا دستور نامعتبر است.")
+
+# ---------------------- بن و آنبن ----------------------
+@bot.message_handler(commands=["ban"])
+def ban_user(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        target_id = int(message.text.split()[1])
+        bans.insert_one({"user_id": target_id})
+        bot.send_message(message.chat.id, "✅ کاربر بن شد.")
+    except:
+        bot.send_message(message.chat.id, "❌ دستور اشتباه.")
+
+@bot.message_handler(commands=["unban"])
+def unban_user(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        target_id = int(message.text.split()[1])
+        bans.delete_one({"user_id": target_id})
+        bot.send_message(message.chat.id, "✅ کاربر آنبن شد.")
+    except:
+        bot.send_message(message.chat.id, "❌ دستور اشتباه.")
+
+# ---------------------- وب‌هوک ----------------------
+@app.route('/', methods=["POST"])
+def webhook():
+    if request.headers.get("content-type") == "application/json":
+        json_str = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+    return "OK"
+
+def set_webhook():
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+
+# ---------------------- اجرا ----------------------
 if __name__ == "__main__":
     set_webhook()
     app.run(host="0.0.0.0", port=5000)
