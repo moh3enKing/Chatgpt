@@ -1,3 +1,3 @@
-python-telegram-bot==20.3
-pymongo[srv]
-requests
+python-telegram-bot[webhooks]==20.3
+pymongo==4.3.3
+requests==2.31.0
