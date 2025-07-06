@@ -355,8 +355,12 @@ def download_spotify(update: Update, context: CallbackContext):
             track = data["data"]["track"]
             caption = f"🎵 {track['name']}\n🎤 {track['artists']}\n⏳ مدت: {track['duration']}"
             
-            duration_parts = track["duration"].split(":")
-            duration_seconds = int(duration_parts[0]) * 60 + int(duration_parts[1])
+            # محاسبه مدت زمان به ثانیه
+            duration_parts = list(map(int, track["duration"].split(":")))
+            if len(duration_parts) == 2:
+                duration = duration_parts[0] * 60 + duration_parts[1]
+            else:
+                duration = 0
             
             context.bot.send_audio(
                 chat_id=update.effective_chat.id,
@@ -364,7 +368,7 @@ def download_spotify(update: Update, context: CallbackContext):
                 caption=caption,
                 title=track["name"],
                 performer=track["artists"],
-                duration=duration_seconds
+                duration=duration
             )
         else:
             update.message.reply_text("⚠️ خطا در دریافت آهنگ اسپاتیفای. لطفا لینک را بررسی کنید.")
