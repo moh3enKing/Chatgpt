@@ -5,7 +5,7 @@ import requests
 import time
 
 # اطلاعات تنظیمات
-BOT_TOKEN = "توکن_جدید"
+BOT_TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
 ADMIN_ID = 5637609683
 WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
 AI_API_URL = "https://starsshoptl.ir/Ai/index.php?text="
