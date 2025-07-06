@@ -1,8 +1,11 @@
+import os
 import telebot
+from telebot import types
 from flask import Flask, request
+import pymongo
 import requests
-import re
-import time
+from datetime import datetime, timedelta
+import logging
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -27,9 +30,14 @@ PINTEREST_API = "https://haji.s2025h.space/pin/?url={}&client_key=keyvip"
 IMAGE_API = "https://v3.api-free.ir/image/?text={}"
 
 # MongoDB setup
-client = pymongo.MongoClient(MONGODB_URI)
-db = client["telegram_bot"]
-users_collection = db["users"]
+try:
+    client = pymongo.MongoClient(MONGODB_URI, server_selection_timeout_ms=5000)
+    client.admin.command('ping')  # Test MongoDB connection
+    db = client["telegram_bot"]
+    users_collection = db["users"]
+    logger.info("MongoDB connected successfully")
+except Exception as e:
+    logger.error(f"Failed to connect to MongoDB: {e}")
 
 # Spam protection
 SPAM_LIMIT = 4
@@ -64,15 +72,19 @@ def check_channel_membership(user_id):
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
+    logger.info(f"Received /start from user {user_id}")
     user = users_collection.find_one({"user_id": user_id})
 
     # Notify admin for first-time users
     if not user:
         users_collection.insert_one({"user_id": user_id, "joined": False, "messages": [], "support_mode": False, "banned": False})
-        bot.send_message(
-            ADMIN_ID,
-            f"کاربر جدید استارت کرد:\nID: {user_id}\nUsername: @{message.from_user.username or 'None'}"
-        )
+        try:
+            bot.send_message(
+                ADMIN_ID,
+                f"کاربر جدید استارت کرد:\nID: {user_id}\nUsername: @{message.from_user.username or 'None'}"
+            )
+        except Exception as e:
+            logger.error(f"Error notifying admin: {e}")
 
     # Check if user is banned
     if user and user.get("banned", False):
@@ -98,6 +110,7 @@ def start(message):
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join_callback(call):
     user_id = call.from_user.id
+    logger.info(f"Received check_join callback from user {user_id}")
     bot.answer_callback_query(call.id)
 
     if check_channel_membership(user_id):
@@ -107,19 +120,26 @@ def check_join_callback(call):
             "ممنون که جوین کردی! 😊 حالا می‌تونی از امکانات ربات استفاده کنی.\n"
             "برای اطلاعات بیشتر، دکمه راهنما رو بزن."
         )
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.send_message(call.message.chat.id, welcome_text, reply_markup=MAIN_KEYBOARD)
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            bot.send_message(call.message.chat.id, welcome_text, reply_markup=MAIN_KEYBOARD)
+        except Exception as e:
+            logger.error(f"Error in check_join callback: {e}")
     else:
-        bot.edit_message_text(
-            "❌ هنوز در کانال جوین نکردی!\nلطفاً در کانال جوین کن و دوباره تأیید بزن.",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=call.message.reply_markup
-        )
+        try:
+            bot.edit_message_text(
+                "❌ هنوز در کانال جوین نکردی!\nلطفاً در کانال جوین کن و دوباره تأیید بزن.",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=call.message.reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Error editing message in check_join: {e}")
 
 @bot.message_handler(func=lambda message: message.text == "راهنما 📖")
 def guide(message):
     user_id = message.from_user.id
+    logger.info(f"Received guide request from user {user_id}")
     if not check_channel_membership(user_id):
         bot.reply_to(message, "لطفاً اول در کانال جوین کن!")
         return
@@ -140,37 +160,53 @@ def guide(message):
         "4. برای هر مشکلی، از دکمه پشتیبانی استفاده کن.\n\n"
         "😊 **سؤالی داشتی؟** دکمه پشتیبانی رو بزن تا بتونیم باهات در ارتباط باشیم!"
     )
-    bot.reply_to(message, guide_text, parse_mode="Markdown")
-    bot.send_message(message.chat.id, "🌟 ما همیشه در خدمت شما هستیم!", reply_markup=MAIN_KEYBOARD)
+    try:
+        bot.reply_to(message, guide_text, parse_mode="Markdown")
+        bot.send_message(message.chat.id, "🌟 ما همیشه در خدمت شما هستیم!", reply_markup=MAIN_KEYBOARD)
+    except Exception as e:
+        logger.error(f"Error in guide handler: {e}")
 
 @bot.message_handler(func=lambda message: message.text == "پشتیبانی 🛠")
 def support(message):
     user_id = message.from_user.id
+    logger.info(f"Received support request from user {user_id}")
     if not check_channel_membership(user_id):
         bot.reply_to(message, "لطفاً اول در کانال جوین کن!")
         return
 
     users_collection.update_one({"user_id": user_id}, {"$set": {"support_mode": True}})
-    bot.reply_to(message, "🛠 لطفاً پیامت رو برای پشتیبانی بفرست یا برای خروج 'لغو' رو بزن.", reply_markup=SUPPORT_CANCEL_KEYBOARD)
+    try:
+        bot.reply_to(message, "🛠 لطفاً پیامت رو برای پشتیبانی بفرست یا برای خروج 'لغو' رو بزن.", reply_markup=SUPPORT_CANCEL_KEYBOARD)
+    except Exception as e:
+        logger.error(f"Error in support handler: {e}")
 
 @bot.message_handler(func=lambda message: message.text == "لغو 🚫")
 def cancel_support(message):
     user_id = message.from_user.id
+    logger.info(f"Received cancel support request from user {user_id}")
     users_collection.update_one({"user_id": user_id}, {"$set": {"support_mode": False}})
-    bot.reply_to(message, "🚫 پشتیبانی لغو شد. حالا می‌تونی از ربات استفاده کنی!", reply_markup=MAIN_KEYBOARD)
+    try:
+        bot.reply_to(message, "🚫 پشتیبانی لغو شد. حالا می‌تونی از ربات استفاده کنی!", reply_markup=MAIN_KEYBOARD)
+    except Exception as e:
+        logger.error(f"Error in cancel_support handler: {e}")
 
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     user_id = message.from_user.id
+    logger.info(f"Received admin command from user {user_id}")
     if user_id != ADMIN_ID:
         bot.reply_to(message, "⛔ این دستور فقط برای ادمینه!")
         return
-    bot.reply_to(message, "پنل ادمین 🛠\nلطفاً یه گزینه انتخاب کن:", reply_markup=ADMIN_KEYBOARD)
+    try:
+        bot.reply_to(message, "پنل ادمین 🛠\nلطفاً یه گزینه انتخاب کن:", reply_markup=ADMIN_KEYBOARD)
+    except Exception as e:
+        logger.error(f"Error in admin_panel handler: {e}")
 
 @bot.message_handler(content_types=['text'])
 def handle_message(message):
     user_id = message.from_user.id
     text = message.text
+    logger.info(f"Received text message from user {user_id}: {text}")
     user = users_collection.find_one({"user_id": user_id})
 
     if not user or not user.get("joined", False):
@@ -186,12 +222,16 @@ def handle_message(message):
         if text == "لغو":
             cancel_support(message)
         else:
-            bot.send_message(
-                ADMIN_ID,
-                f"📩 پیام پشتیبانی از @{message.from_user.username or 'None'} (ID: {user_id}):\n{text}",
-                reply_to_message_id=message.message_id
-            )
-            bot.reply_to(message, "✅ پیامت به پشتیبانی ارسال شد. منتظر جواب باش!")
+            try:
+                bot.send_message(
+                    ADMIN_ID,
+                    f"📩 پیام پشتیبانی از @{message.from_user.username or 'None'} (ID: {user_id}):\n{text}",
+                    reply_to_message_id=message.message_id
+                )
+                bot.reply_to(message, "✅ پیامت به پشتیبانی ارسال شد. منتظر جواب باش!")
+            except Exception as e:
+                logger.error(f"Error forwarding support message: {e}")
+                bot.reply_to(message, "❌ خطا در ارسال پیام به پشتیبانی. لطفاً بعداً امتحان کن.")
         return
 
     # Spam protection
@@ -207,8 +247,11 @@ def handle_message(message):
     # Handle admin commands
     if user_id == ADMIN_ID:
         if text in ["بن کاربر 🚫", "آنبن کاربر ✅", "ارسال پیام 📩"]:
-            bot.reply_to(message, "لطفاً آیدی عددی کاربر رو بفرست:")
-            users_collection.update_one({"user_id": user_id}, {"$set": {"admin_action": text}})
+            try:
+                bot.reply_to(message, "لطفاً آیدی عددی کاربر رو بفرست:")
+                users_collection.update_one({"user_id": user_id}, {"$set": {"admin_action": text}})
+            except Exception as e:
+                logger.error(f"Error in admin command setup: {e}")
             return
         elif user.get("admin_action"):
             if not text.strip().isdigit():
@@ -216,7 +259,10 @@ def handle_message(message):
                 return
             target_user_id = int(text.strip())
             users_collection.update_one({"user_id": user_id}, {"$set": {"admin_action": None, "target_user_id": target_user_id}})
-            bot.reply_to(message, "لطفاً پیام اطلاع‌رسانی به کاربر رو بفرست:")
+            try:
+                bot.reply_to(message, "لطفاً پیام اطلاع‌رسانی به کاربر رو بفرست:")
+            except Exception as e:
+                logger.error(f"Error in admin target user setup: {e}")
             return
         elif user.get("target_user_id"):
             action = user.get("admin_action")
@@ -224,17 +270,21 @@ def handle_message(message):
             notification = text
             users_collection.update_one({"user_id": user_id}, {"$set": {"target_user_id": None}})
 
-            if action == "بن کاربر 🚫":
-                users_collection.update_one({"user_id": target_user_id}, {"$set": {"banned": True}})
-                bot.send_message(target_user_id, f"⛔ شما بن شدی!\nدلیل: {notification}")
-                bot.reply_to(message, "کاربر با موفقیت بن شد!")
-            elif action == "آنبن کاربر ✅":
-                users_collection.update_one({"user_id": target_user_id}, {"$set": {"banned": False}})
-                bot.send_message(target_user_id, f"✅ بن شما برداشته شد!\nپیام ادمین: {notification}")
-                bot.reply_to(message, "کاربر با موفقیت آنبن شد!")
-            elif action == "ارسال پیام 📩":
-                bot.send_message(target_user_id, f"📩 پیام از ادمین:\n{notification}")
-                bot.reply_to(message, "پیام با موفقیت ارسال شد!")
+            try:
+                if action == "بن کاربر 🚫":
+                    users_collection.update_one({"user_id": target_user_id}, {"$set": {"banned": True}})
+                    bot.send_message(target_user_id, f"⛔ شما بن شدی!\nدلیل: {notification}")
+                    bot.reply_to(message, "کاربر با موفقیت بن شد!")
+                elif action == "آنبن کاربر ✅":
+                    users_collection.update_one({"user_id": target_user_id}, {"$set": {"banned": False}})
+                    bot.send_message(target_user_id, f"✅ بن شما برداشته شد!\nپیام ادمین: {notification}")
+                    bot.reply_to(message, "کاربر با موفقیت آنبن شد!")
+                elif action == "ارسال پیام 📩":
+                    bot.send_message(target_user_id, f"📩 پیام از ادمین:\n{notification}")
+                    bot.reply_to(message, "پیام با موفقیت ارسال شد!")
+            except Exception as e:
+                logger.error(f"Error processing admin action: {e}")
+                bot.reply_to(message, "❌ خطا در انجام عملیات. لطفاً دوباره امتحان کن.")
             return
 
     # Handle web services
@@ -249,7 +299,7 @@ def handle_message(message):
 
 def handle_instagram(message, url):
     try:
-        response = requests.get(INSTAGRAM_API.format(url))
+        response = requests.get(INSTAGRAM_API.format(url), timeout=10)
         if response.status_code != 200:
             bot.reply_to(message, "❌ خطا در ارتباط با سرور اینستاگرام. لطفاً بعداً امتحان کن.")
             return
@@ -268,7 +318,7 @@ def handle_instagram(message, url):
 
 def handle_spotify(message, url):
     try:
-        response = requests.get(SPOTIFY_API.format(url))
+        response = requests.get(SPOTIFY_API.format(url), timeout=10)
         if response.status_code != 200:
             bot.reply_to(message, "❌ خطا در ارتباط با سرور اسپاتیفای. لطفاً بعداً امتحان کن.")
             return
@@ -283,7 +333,7 @@ def handle_spotify(message, url):
 
 def handle_pinterest(message, url):
     try:
-        response = requests.get(PINTEREST_API.format(url))
+        response = requests.get(PINTEREST_API.format(url), timeout=10)
         if response.status_code != 200:
             bot.reply_to(message, "❌ خطا در ارتباط با سرور پینترست. لطفاً بعداً امتحان کن.")
             return
@@ -300,7 +350,7 @@ def handle_ai_or_image(message, text):
     # Try AI services
     for api in AI_SERVICES:
         try:
-            response = requests.get(api.format(text))
+            response = requests.get(api.format(text), timeout=10)
             if response.status_code == 200:
                 bot.reply_to(message, response.text)
                 return
@@ -310,7 +360,7 @@ def handle_ai_or_image(message, text):
 
     # If AI fails, try image generation
     try:
-        response = requests.get(IMAGE_API.format(text))
+        response = requests.get(IMAGE_API.format(text), timeout=10)
         if response.status_code != 200:
             bot.reply_to(message, "❌ خطا در ارتباط با سرور ساخت تصویر. لطفاً بعداً امتحان کن.")
             return
@@ -327,18 +377,25 @@ def handle_ai_or_image(message, text):
 @app.route(f"/{TOKEN}", methods=["GET", "POST"])
 def webhook():
     try:
+        logger.info(f"Received {request.method} request at webhook")
         if request.method == "POST":
             update = request.get_json()
             if update:
+                logger.info("Processing update from Telegram")
                 bot.process_new_updates([telebot.types.Update.de_json(update)])
                 return "", 200
         elif request.method == "GET":
-            # Handle GET requests for testing or webhook verification
+            logger.info("Received GET request for webhook verification")
             return "Webhook is active", 200
         return "", 400
     except Exception as e:
         logger.error(f"Error in webhook: {e}")
         return "", 500
+
+# Health check endpoint
+@app.route("/health", methods=["GET"])
+def health_check():
+    return "Server is running", 200
 
 # Set webhook
 def set_webhook():
@@ -346,7 +403,9 @@ def set_webhook():
         bot.remove_webhook()
         success = bot.set_webhook(url=WEBHOOK_URL)
         if success:
-            logger.info(f"Webhook set to {WEBHOOK_URL}")
+            logger.info(f"Webhook successfully set to {WEBHOOK_URL}")
+            webhook_info = bot.get_webhook_info()
+            logger.info(f"Webhook info: {webhook_info}")
         else:
             logger.error("Failed to set webhook")
     except Exception as e:
@@ -355,7 +414,7 @@ def set_webhook():
 # For Gunicorn, export the Flask app
 application = app
 
-# ست وب‌هوک و ران اپ
 if __name__ == "__main__":
-    requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={WEBHOOK_URL}")
-    app.run(host="0.0.0.0", port=10000)
+    set_webhook()
+    # For local testing, use Flask's development server
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
