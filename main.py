@@ -5,7 +5,7 @@ from flask import Flask, request
 import pymongo
 import requests
 from datetime import datetime, timedelta
-import logging
+import logging  # Ensure logging is imported
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -423,4 +423,4 @@ if __name__ == "__main__":
     logger.info(f"Starting app on port: {os.getenv('PORT', 5000)}")
     set_webhook()
     # For local testing, use Flask's development server
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 1000)))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
