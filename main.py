@@ -1,171 +1,131 @@
 import logging
-import requests
-import re
 import time
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
+import requests
 from pymongo import MongoClient
-from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-# ---------------- تنظیمات ----------------
-BOT_TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
+# تنظیمات
+BOT_TOKEN = "توکن خودت اینجا"
 OWNER_ID = 5637609683
 CHANNEL_USERNAME = "netgoris"
 MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-SUPPORT_ACTIVE = {}
+WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
 
-# ---------------- اتصال به دیتابیس ----------------
+# اتصال به دیتابیس
 client = MongoClient(MONGO_URI)
-db = client['TelegramBot']
-users = db['Users']
-spam = db['Spam']
+db = client["botdb"]
+users = db["users"]
 
-# ---------------- تنظیم لاگ ----------------
+# ثبت زمان ارسال پیام کاربران
+user_spam = {}
+
 logging.basicConfig(level=logging.INFO)
 
-# ---------------- متن راهنما ----------------
+# متن راهنما
 HELP_TEXT = """
-🤖 راهنمای استفاده از ربات:
+🎉 به ربات هوش مصنوعی ما خوش آمدید 🎉
 
-🔹 ارسال پیام متنی: فقط کافیست پیام خود را ارسال کنید، هوش مصنوعی پاسخ می‌دهد.
+🤖 این ربات در نسخه اولیه است و به‌مرور زمان امکانات بیشتری اضافه می‌شود. ممنون از صبر و همراهی شما.
 
-🔹 دانلود اینستاگرام، اسپاتیفای، پینترست:
-لینک مربوطه را ارسال کنید، فایل مستقیم برای شما ارسال می‌شود.
+📌 امکانات ربات:
+▪️ چت با هوش مصنوعی (فقط کافیست پیام بفرستید)
+▪️ ساخت تصویر (دستور: `عکس متن‌انگلیسی`)
+▪️ دانلود:
+   - اینستاگرام (لینک بده)
+   - اسپاتیفای (لینک بده)
+   - پینترست (لینک بده)
 
-🔹 ساخت عکس:
-دستور زیر را ارسال کنید (متن انگلیسی باشد):
-ساخت عکس [متن]
+📛 قوانین:
+▪️ ارسال پیام اسپم = سکوت ۲ دقیقه
+▪️ رعایت احترام به دیگران
+▪️ لینک‌های ناشناس یا غیرمجاز بررسی نمی‌شوند
 
-🌟 امکانات:
-✔️ پاسخ هوش مصنوعی
-✔️ دانلود مستقیم شبکه‌های اجتماعی
-✔️ ساخت عکس با متن سفارشی
-✔️ ارتباط با پشتیبانی
+🛟 پشتیبانی مستقیم در دسترس است (دکمه پایین)
 
-📌 قوانین:
-- ارسال 4 پیام پشت سر هم = سکوت 2 دقیقه
-- فقط لینک‌های معتبر یا دستور ساخت عکس را ارسال کنید
-- رعایت ادب الزامی است
-
-📢 نسخه فعلی: اولیه (ربات درحال آپدیت می‌باشد)
-
-کانال رسمی: @netgoris
+⚠️ برای ساخت عکس لطفاً متن انگلیسی ارسال کنید
 """
 
-# ---------------- توابع ----------------
+# دکمه‌ها
+def main_keyboard():
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("📄 راهنما"), KeyboardButton("🛠 پشتیبانی")]
+    ], resize_keyboard=True)
 
+# چک عضویت
+async def check_join(update: Update):
+    member = await update.get_bot().get_chat_member(f"@{CHANNEL_USERNAME}", update.effective_user.id)
+    return member.status in ["member", "creator", "administrator"]
+
+# شروع
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not users.find_one({"user_id": user.id}):
-        users.insert_one({"user_id": user.id, "first_name": user.first_name})
-        await context.bot.send_message(chat_id=OWNER_ID, text=f"کاربر جدید استارت کرد:\n{user.mention_html()}", parse_mode="HTML")
+    if not await check_join(update):
+        await update.message.reply_text("برای استفاده از ربات ابتدا عضو کانال شوید:\n@" + CHANNEL_USERNAME)
+        return
+    if not users.find_one({"user_id": update.effective_user.id}):
+        users.insert_one({"user_id": update.effective_user.id, "time": time.time()})
+        await context.bot.send_message(OWNER_ID, f"کاربر جدید استارت زد: {update.effective_user.full_name} ({update.effective_user.id})")
+    await update.message.reply_text("✅ خوش آمدید!\nبرای آشنایی با امکانات ربات دکمه راهنما را بزنید.", reply_markup=main_keyboard())
 
-    if not await is_member(context, user.id):
-        keyboard = [
-            [InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME}")],
-            [InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")]
-        ]
-        await update.message.reply_text("🔒 لطفاً ابتدا عضو کانال شوید:", reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await send_main_menu(update, context)
+# راهنما
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_TEXT, reply_markup=main_keyboard())
 
-async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if await is_member(context, query.from_user.id):
-        await context.bot.delete_message(chat_id=query.message.chat_id, message_id=query.message.message_id)
-        await send_main_menu(query, context)
-    else:
-        await query.reply_text("⛔ هنوز عضو کانال نیستید!")
-
-async def send_main_menu(update_or_query, context):
-    keyboard = [
-        [InlineKeyboardButton("📖 راهنما", callback_data="help")],
-        [InlineKeyboardButton("💬 پشتیبانی", callback_data="support")]
-    ]
-    if isinstance(update_or_query, Update):
-        await update_or_query.message.reply_text("🎉 خوش آمدید! از ربات لذت ببرید.", reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await update_or_query.message.reply_text("🎉 خوش آمدید! از ربات لذت ببرید.", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="back")]]
-    await query.edit_message_text(HELP_TEXT, reply_markup=InlineKeyboardMarkup(keyboard))
-
+# پشتیبانی
 async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    SUPPORT_ACTIVE[query.from_user.id] = True
-    await query.message.reply_text("✍️ پیام خود را ارسال کنید، پاسخ توسط مدیریت داده می‌شود.")
-    
-async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await send_main_menu(query, context)
+    await update.message.reply_text("پیام خود را ارسال کنید، پشتیبانی فعال شد. برای لغو `لغو` را ارسال کنید.")
+    context.user_data["support"] = True
 
-async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+# پیام‌ها
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
     text = update.message.text
 
     # ضد اسپم
-    recent_msgs = spam.find({"user_id": user.id, "time": {"$gt": datetime.utcnow() - timedelta(minutes=2)}})
-    if recent_msgs.count() >= 4:
-        await update.message.reply_text("⛔ لطفاً ۲ دقیقه صبر کنید.")
-        return
-    spam.insert_one({"user_id": user.id, "time": datetime.utcnow()})
-
-    # چک پشتیبانی
-    if SUPPORT_ACTIVE.get(user.id):
-        await context.bot.send_message(chat_id=OWNER_ID, text=f"💬 پیام جدید از {user.first_name}:\n{text}")
-        SUPPORT_ACTIVE.pop(user.id)
-        await update.message.reply_text("✅ پیام شما ارسال شد.")
+    t = time.time()
+    if uid not in user_spam:
+        user_spam[uid] = []
+    user_spam[uid] = [msg for msg in user_spam[uid] if t - msg < 120]
+    user_spam[uid].append(t)
+    if len(user_spam[uid]) > 4:
+        await update.message.reply_text("⏳ به دلیل ارسال زیاد، لطفاً ۲ دقیقه صبر کنید.")
         return
 
-    # لینک‌ها
-    if "instagram.com" in text:
-        await handle_instagram(update, context, text)
-    elif "spotify.com" in text:
-        await handle_spotify(update, context, text)
-    elif "pin" in text:
-        await handle_pinterest(update, context, text)
-    elif text.lower().startswith("ساخت عکس"):
-        query = text.replace("ساخت عکس", "").strip()
-        await handle_image(update, context, query)
-    else:
-        await handle_ai_chat(update, context, text)
+    # چک عضویت
+    if not await check_join(update):
+        await update.message.reply_text("برای استفاده از ربات ابتدا عضو کانال شوید:\n@" + CHANNEL_USERNAME)
+        return
 
-async def handle_instagram(update, context, url):
-    try:
-        res = requests.get(f"https://pouriam.top/eyephp/instagram?url={url}").json()
-        for link in res.get("links", []):
-            await update.message.reply_document(link)
-    except:
-        await update.message.reply_text("⛔ خطا در دریافت از اینستاگرام")
+    # پشتیبانی فعال
+    if context.user_data.get("support"):
+        if text.lower() == "لغو":
+            context.user_data["support"] = False
+            await update.message.reply_text("پشتیبانی غیرفعال شد.", reply_markup=main_keyboard())
+        else:
+            await context.bot.send_message(OWNER_ID, f"پیام از {uid}:\n{text}")
+            await update.message.reply_text("پیام شما به پشتیبانی ارسال شد.")
+        return
 
-async def handle_spotify(update, context, url):
-    try:
-        res = requests.get(f"http://api.cactus-dev.ir/spotify.php?url={url}").json()
-        await update.message.reply_document(res["data"]["download_url"])
-    except:
-        await update.message.reply_text("⛔ خطا در دریافت آهنگ")
-
-async def handle_pinterest(update, context, url):
-    try:
-        res = requests.get(f"https://haji.s2025h.space/pin/?url={url}&client_key=keyvip").json()
-        await update.message.reply_photo(res["download_url"])
-    except:
-        await update.message.reply_text("⛔ خطا در دریافت عکس پینترست")
-
-async def handle_image(update, context, query):
-    try:
+    # دستورات
+    if text == "📄 راهنما":
+        await update.message.reply_text(HELP_TEXT, reply_markup=main_keyboard())
+    elif text == "🛠 پشتیبانی":
+        await support(update, context)
+    elif text.startswith("عکس "):
+        query = text[5:]
+        if not query.isascii():
+            await update.message.reply_text("لطفاً متن انگلیسی برای ساخت عکس وارد کنید.")
+            return
         res = requests.get(f"https://v3.api-free.ir/image/?text={query}").json()
-        await update.message.reply_photo(res["result"])
-    except:
-        await update.message.reply_text("⛔ خطا در ساخت تصویر")
+        if res.get("ok"):
+            await update.message.reply_photo(res["result"])
+        else:
+            await update.message.reply_text("خطا در ساخت تصویر.")
+    else:
+        await chat_with_ai(update, context, text)
 
-async def handle_ai_chat(update, context, text):
+# چت با هوش مصنوعی
+async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, text):
     urls = [
         f"https://starsshoptl.ir/Ai/index.php?text={text}",
         f"https://starsshoptl.ir/Ai/index.php?model=gpt&text={text}",
@@ -173,34 +133,58 @@ async def handle_ai_chat(update, context, text):
     ]
     for url in urls:
         try:
-            res = requests.get(url, timeout=5).text
-            if res:
-                await update.message.reply_text(res)
+            res = requests.get(url, timeout=10)
+            if res.ok:
+                await update.message.reply_text(res.text)
                 return
         except:
             continue
-    await update.message.reply_text("⛔ هوش مصنوعی در دسترس نیست.")
+    await update.message.reply_text("خطا در دریافت پاسخ از سرور.")
 
-async def is_member(context, user_id):
-    try:
-        member = await context.bot.get_chat_member(f"@{CHANNEL_USERNAME}", user_id)
-        return member.status in ["member", "creator", "administrator"]
-    except:
-        return False
+# لینک دانلود
+async def downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
 
-# ---------------- اجرا ----------------
+    if "instagram.com" in text:
+        try:
+            res = requests.get(f"https://pouriam.top/eyephp/instagram?url={text}").json()
+            if res["links"]:
+                for link in res["links"]:
+                    if ".mp4" in link:
+                        await update.message.reply_video(link)
+                    else:
+                        await update.message.reply_photo(link)
+            else:
+                await update.message.reply_text("خطا در دریافت محتوا.")
+        except:
+            await update.message.reply_text("خطا در پردازش لینک اینستاگرام.")
+    elif "spotify.com" in text:
+        try:
+            res = requests.get(f"http://api.cactus-dev.ir/spotify.php?url={text}").json()
+            if res["ok"]:
+                await update.message.reply_audio(res["data"]["download_url"], title=res["data"]["name"])
+            else:
+                await update.message.reply_text("خطا در دریافت فایل اسپاتیفای.")
+        except:
+            await update.message.reply_text("خطا در پردازش لینک اسپاتیفای.")
+    elif "pin" in text:
+        try:
+            res = requests.get(f"https://haji.s2025h.space/pin/?url={text}&client_key=keyvip").json()
+            if res["status"]:
+                await update.message.reply_photo(res["download_url"])
+            else:
+                await update.message.reply_text("خطا در دریافت تصویر.")
+        except:
+            await update.message.reply_text("خطا در پردازش لینک پینترست.")
+    else:
+        await update.message.reply_text("لینک نامعتبر است یا پشتیبانی نمی‌شود.")
 
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+# اجرای ربات
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(check_join, pattern="check_join"))
-    app.add_handler(CallbackQueryHandler(help_menu, pattern="help"))
-    app.add_handler(CallbackQueryHandler(back_to_menu, pattern="back"))
-    app.add_handler(CallbackQueryHandler(support, pattern="support"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, downloader))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    app.run_webhook(port=10000, listen="0.0.0.0", webhook_url="https://chatgpt-qg71.onrender.com")
-
-if __name__ == "__main__":
-    main()
+    app.run_webhook(listen="0.0.0.0", port=10000, webhook_url=WEBHOOK_URL)
