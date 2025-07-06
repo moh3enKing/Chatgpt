@@ -1,144 +1,186 @@
 import telebot
 from flask import Flask, request
 import requests
+import os
 from pymongo import MongoClient
 
-TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
-CHANNEL_ID = "@netgoris"
-OWNER_ID = 5637609683
-MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+TOKEN = '8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0'
+WEBHOOK_URL = f"https://chatgpt-qg71.onrender.com/{TOKEN}"
 
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
-client = MongoClient(MONGO_URI)
-db = client["bot"]
-users = db["users"]
 
-# وب‌سرویس‌های چت
-AI_SERVICES = [
-    "https://starsshoptl.ir/Ai/index.php?text={}",
-    "https://starsshoptl.ir/Ai/index.php?model=gpt&text={}",
-    "https://starsshoptl.ir/Ai/index.php?model=deepseek&text={}"
-]
+# اتصال به دیتابیس
+client = MongoClient("mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+db = client['bot_data']
+users = db['users']
 
-# لینک‌های دانلود
-INSTAGRAM_API = "https://pouriam.top/eyephp/instagram?url="
-SPOTIFY_API = "http://api.cactus-dev.ir/spotify.php?url="
-PINTEREST_API = "https://haji.s2025h.space/pin/?url={}&client_key=keyvip"
-IMAGE_API = "https://v3.api-free.ir/image/?text={}"
+OWNER_ID = 5637609683
+CHANNEL_USERNAME = "@netgoris"
 
-# دکمه‌های شیشه‌ای
-def join_markup():
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(telebot.types.InlineKeyboardButton("💠 عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.replace('@','')}"))
-    markup.add(telebot.types.InlineKeyboardButton("✅ تایید عضویت", callback_data="check_join"))
-    return markup
 
-def menu_markup():
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("📋 راهنما", "💬 پشتیبانی")
-    return markup
-
-# چک عضویت
-def is_joined(user_id):
+# جین اجباری
+def is_member(user_id):
     try:
-        member = bot.get_chat_member(CHANNEL_ID, user_id)
-        return member.status in ["member", "administrator", "creator"]
+        res = bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        return res.status in ["member", "administrator", "creator"]
     except:
         return False
 
+
+# وب سرویس‌های هوش مصنوعی
+AI_APIS = [
+    "https://starsshoptl.ir/Ai/index.php?text={text}",
+    "https://starsshoptl.ir/Ai/index.php?model=gpt&text={text}",
+    "https://starsshoptl.ir/Ai/index.php?model=deepseek&text={text}"
+]
+
+
 # هندل استارت
-@bot.message_handler(commands=["start"])
+@bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
-    if not is_joined(user_id):
-        bot.send_message(user_id, "👋 برای استفاده از ربات لطفاً ابتدا عضو کانال شوید:", reply_markup=join_markup())
-    else:
-        users.update_one({"_id": user_id}, {"$set": {"active": True}}, upsert=True)
-        bot.send_message(user_id, "🎉 خوش آمدید! از ربات استفاده کنید.", reply_markup=menu_markup())
-        if not users.find_one({"_id": user_id, "notified": True}):
-            bot.send_message(OWNER_ID, f"🙋‍♂️ کاربر جدید استارت زد: <code>{user_id}</code>")
-            users.update_one({"_id": user_id}, {"$set": {"notified": True}})
 
-# دکمه‌های شیشه‌ای
-@bot.callback_query_handler(func=lambda c: c.data == "check_join")
-def check_join(call):
-    if is_joined(call.from_user.id):
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.send_message(call.from_user.id, "✅ عضویت تایید شد.", reply_markup=menu_markup())
-    else:
-        bot.answer_callback_query(call.id, "لطفاً ابتدا عضو کانال شوید.")
-
-# راهنما
-@bot.message_handler(func=lambda m: m.text == "📋 راهنما")
-def guide(message):
-    text = """
-📖 <b>راهنمای ربات:</b>
-
-✅ عضویت در کانال الزامیست.
-✅ ارسال لینک اینستاگرام، اسپاتیفای، پینترست یا متن برای پاسخ هوش مصنوعی مجاز است.
-✅ رعایت ادب در چت الزامیست.
-🚫 اسپم بیش از حد باعث بلاک می‌شود.
-
-💡 ربات همیشه در خدمت شماست!
-"""
-    bot.send_message(message.chat.id, text, reply_markup=menu_markup())
-
-# پشتیبانی
-@bot.message_handler(func=lambda m: m.text == "💬 پشتیبانی")
-def support(message):
-    bot.send_message(message.chat.id, "📩 لطفاً پیام خود را ارسال کنید، منتظر پاسخ باشید.", reply_markup=telebot.types.ReplyKeyboardRemove())
-    bot.register_next_step_handler(message, forward_support)
-
-def forward_support(message):
-    bot.forward_message(OWNER_ID, message.chat.id, message.message_id)
-    bot.send_message(message.chat.id, "✅ پیام ارسال شد، منتظر پاسخ بمانید.")
-
-@bot.message_handler(func=lambda m: True, content_types=["text"])
-def chat_handler(message):
-    if not is_joined(message.from_user.id):
-        bot.send_message(message.chat.id, "🔒 لطفاً ابتدا عضو کانال شوید.", reply_markup=join_markup())
+    if not is_member(user_id):
+        markup = telebot.types.InlineKeyboardMarkup()
+        btn1 = telebot.types.InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME.strip('@')}")
+        btn2 = telebot.types.InlineKeyboardButton("✅ بررسی عضویت", callback_data="check")
+        markup.add(btn1)
+        markup.add(btn2)
+        bot.send_message(user_id, "🔒 برای استفاده از ربات لطفاً در کانال ما عضو شوید:", reply_markup=markup)
         return
 
-    text = message.text
+    if users.find_one({"user_id": user_id}) is None:
+        users.insert_one({"user_id": user_id})
+        bot.send_message(OWNER_ID, f"👤 کاربر جدید: {message.from_user.first_name} ({user_id})")
 
-    if "instagram.com" in text:
-        res = requests.get(INSTAGRAM_API + text).json()
-        for link in res.get("links", []):
-            bot.send_message(message.chat.id, link)
-    elif "spotify.com" in text:
-        res = requests.get(SPOTIFY_API + text).json()
-        bot.send_message(message.chat.id, res.get("data", {}).get("download_url", "⛔ خطا در دریافت فایل"))
-    elif "pin.it" in text or "pinterest.com" in text:
-        res = requests.get(PINTEREST_API.format(text)).json()
-        bot.send_message(message.chat.id, res.get("download_url", "⛔ خطا در دریافت تصویر"))
-    elif text.startswith("ساخت عکس "):
-        word = text.replace("ساخت عکس ", "")
-        res = requests.get(IMAGE_API.format(word)).json()
-        bot.send_message(message.chat.id, res.get("result", "⛔ خطا در ساخت عکس"))
-    else:
-        for url in AI_SERVICES:
-            res = requests.get(url.format(text)).text
-            if "Hey there" in res or res.strip():
-                bot.send_message(message.chat.id, res)
-                break
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("ℹ️ راهنما", "💬 پشتیبانی")
+    bot.send_message(user_id, "🎉 خوش آمدید! از امکانات ربات استفاده کنید.", reply_markup=markup)
+
+
+# دکمه های شیشه ای
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    if call.data == "check":
+        if is_member(call.from_user.id):
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+            markup.add("ℹ️ راهنما", "💬 پشتیبانی")
+            bot.send_message(call.from_user.id, "✅ عضویت تایید شد. خوش آمدید!", reply_markup=markup)
         else:
-            bot.send_message(message.chat.id, "⛔ پاسخ از سرورها دریافت نشد.")
+            bot.answer_callback_query(call.id, "❌ هنوز عضو نشدید!", show_alert=True)
 
-# دریافت پیام پشتیبانی مدیر
-@bot.message_handler(func=lambda m: m.chat.id == OWNER_ID, content_types=["reply"])
-def reply_support(message):
-    if message.reply_to_message.forward_from:
-        bot.send_message(message.reply_to_message.forward_from.id, message.text)
 
-# وب‌هوک
-@app.route(f"/{TOKEN}", methods=["POST"])
+# پیام‌های متنی
+@bot.message_handler(func=lambda m: True, content_types=['text'])
+def handle_text(message):
+    text = message.text
+    user_id = message.from_user.id
+
+    if text == "ℹ️ راهنما":
+        markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add("⬅️ بازگشت", "💬 پشتیبانی")
+        bot.send_message(user_id, "📖 راهنمای ربات:\n- لطفاً عضو کانال شوید.\n- ارسال لینک‌های معتبر:\nاینستاگرام، اسپاتیفای، پینترست.\n- رعایت قوانین و احترام الزامی است.\n\n⚠️ لینک غیرمجاز ممنوع است.", reply_markup=markup)
+
+    elif text == "⬅️ بازگشت":
+        markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add("ℹ️ راهنما", "💬 پشتیبانی")
+        bot.send_message(user_id, "🔙 بازگشت به منو اصلی.", reply_markup=markup)
+
+    elif text == "💬 پشتیبانی":
+        bot.send_message(user_id, "✉️ پیام خود را ارسال کنید.\nبرای لغو دستور: /cancel")
+        bot.register_next_step_handler(message, support_handler)
+
+    elif "instagram.com" in text:
+        handle_instagram(message)
+
+    elif "spotify.com" in text:
+        handle_spotify(message)
+
+    elif "pin.it" in text or "pinterest.com" in text:
+        handle_pinterest(message)
+
+    else:
+        handle_ai(message)
+
+
+# هندل پشتیبانی
+def support_handler(message):
+    if message.text == "/cancel":
+        markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add("ℹ️ راهنما", "💬 پشتیبانی")
+        bot.send_message(message.chat.id, "❌ پشتیبانی لغو شد.", reply_markup=markup)
+        return
+
+    msg = f"📩 پیام جدید:\n\n{message.text}\n\n👤 از: {message.from_user.id}"
+    bot.send_message(OWNER_ID, msg)
+    bot.send_message(message.chat.id, "✅ پیام شما ارسال شد.")
+
+
+# هندل هوش مصنوعی
+def handle_ai(message):
+    text = message.text
+    for api in AI_APIS:
+        try:
+            res = requests.get(api.format(text=text)).json()
+            if "Hey there" in res.get("text", "") or "Hey there" in res.get("result", ""):
+                bot.send_message(message.chat.id, res.get("result", res.get("text")))
+                return
+        except:
+            continue
+    bot.send_message(message.chat.id, "❌ مشکلی در پاسخ‌دهی رخ داد.")
+
+
+# هندل اینستاگرام
+def handle_instagram(message):
+    try:
+        url = f"https://pouriam.top/eyephp/instagram?url={message.text}"
+        res = requests.get(url).json()
+        for link in res["links"]:
+            bot.send_message(message.chat.id, link)
+    except:
+        bot.send_message(message.chat.id, "❌ لینک اینستاگرام نامعتبر است.")
+
+
+# هندل اسپاتیفای
+def handle_spotify(message):
+    try:
+        url = f"http://api.cactus-dev.ir/spotify.php?url={message.text}"
+        res = requests.get(url).json()
+        bot.send_audio(message.chat.id, res['data']['download_url'])
+    except:
+        bot.send_message(message.chat.id, "❌ لینک اسپاتیفای نامعتبر است.")
+
+
+# هندل پینترست
+def handle_pinterest(message):
+    try:
+        url = f"https://haji.s2025h.space/pin/?url={message.text}&client_key=keyvip"
+        res = requests.get(url).json()
+        bot.send_photo(message.chat.id, res["download_url"])
+    except:
+        bot.send_message(message.chat.id, "❌ لینک پینترست نامعتبر است.")
+
+
+# وب هوک و اجرا روی هاست
+@app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
-    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
-    bot.process_new_updates([update])
-    return "OK"
+    if request.headers.get('content-type') == 'application/json':
+        json_str = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return '', 200
+    return '', 403
+
+
+@app.route('/')
+def index():
+    return "✅ Bot Running."
+
 
 if __name__ == "__main__":
+    port = int(os.environ.get('PORT', 5000))
     bot.remove_webhook()
-    bot.set_webhook(url=f"https://chatgpt-qg71.onrender.com/{TOKEN}")
-    app.run(host="0.0.0.0", port=5000)
+    bot.set_webhook(url=WEBHOOK_URL)
+    app.run(host="0.0.0.0", port=port)
