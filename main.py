@@ -86,7 +86,7 @@ def help_message(message):
     text = """
 📚 راهنمای استفاده از ربات:
 
-🔗 ربات لینک‌های زیر رو پشتیبانی می‌کنه:
+🔗 ربات لینک‌های زیر را پشتیبانی می‌کند:
 ✅ اینستاگرام
 ✅ اسپاتیفای
 ✅ پینترست
@@ -97,6 +97,8 @@ def help_message(message):
 - ارسال اسپم = سکوت ۲ دقیقه‌ای
 - عضویت در کانال الزامی است
 - سواستفاده = مسدودی دائم
+
+برای برگشت، دکمه 🔙 را بزنید.
 """
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("🔙 برگشت")
@@ -114,7 +116,7 @@ support_mode = []
 def support_start(message):
     support_mode.append(message.from_user.id)
     markup = types.ReplyKeyboardRemove()
-    bot.send_message(message.chat.id, "📝 لطفاً سوال خود را ارسال کنید. برای خروج 'لغو' ارسال کنید.", reply_markup=markup)
+    bot.send_message(message.chat.id, "📝 لطفاً سوال خود را ارسال کنید. برای خروج 'لغو' را ارسال کنید.", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.from_user.id in support_mode)
 def handle_support(message):
@@ -216,12 +218,18 @@ def ai_chat(message, text):
             continue
     bot.send_message(message.chat.id, "⛔️ خطا در دریافت پاسخ AI.")
 
+# ------ صفحه اصلی دامنه ------
+@app.route("/", methods=["GET"])
+def home():
+    return "ربات آنلاین است ✅", 200
+
 # ------ وبهوک ------
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
     return "ok", 200
 
+# ------ اجرا ------
 if __name__ == "__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
