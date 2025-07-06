@@ -1,198 +1,176 @@
-import telebot
-from telebot import types
 from flask import Flask, request
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 import requests
 import time
-from pymongo import MongoClient
-import threading
 
-# ----------- تنظیمات -----------
+# ======= تنظیمات اولیه =======
 TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
-CHANNEL = "@netgoris"
+CHANNEL_ID = "@netgoris"
 ADMIN_ID = 5637609683
-MONGO_URL = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-WEBHOOK_URL = "https://chatgpt-qg71.onrender.com/"  # دامنه هاست
+MONGO_PASS = "RIHPhDJPhd9aNJvC"
+MONGO_LINK = f"mongodb+srv://mohsenfeizi1386:{MONGO_PASS}@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
-db = MongoClient(MONGO_URL).bot_db
-users = db.users
-support_sessions = {}
-spam_tracker = {}
 
-# ----------- ضداسپم -----------
-def is_spamming(user_id):
-    now = time.time()
-    if user_id not in spam_tracker:
-        spam_tracker[user_id] = []
-    spam_tracker[user_id] = [t for t in spam_tracker[user_id] if now - t < 120]
-    spam_tracker[user_id].append(now)
-    return len(spam_tracker[user_id]) > 4
+# ======= حافظه موقتی ضد اسپم =======
+user_message_times = {}
 
-# ----------- چک عضویت -----------
-def is_joined(user_id):
+# ======= تابع بررسی جوین اجباری =======
+def check_joined(user_id):
     try:
-        status = bot.get_chat_member(CHANNEL, user_id).status
-        return status in ["member", "administrator", "creator"]
-    except:
+        member = bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status != "left"
+    except Exception:
         return False
 
-# ----------- استارت -----------
-@bot.message_handler(commands=["start"])
-def start(message):
-    user = users.find_one({"_id": message.chat.id})
-    if not user:
-        users.insert_one({"_id": message.chat.id, "banned": False})
-        bot.send_message(ADMIN_ID, f"کاربر جدید استارت زد:\n{message.from_user.first_name}\nID: {message.chat.id}")
+# ======= صفحه جوین اجباری =======
+def send_join_forced(message):
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("عضویت در کانال", url=f"https://t.me/{CHANNEL_ID[1:]}"))
+    keyboard.add(InlineKeyboardButton("تایید عضویت", callback_data="check_join"))
+    bot.send_message(message.chat.id, "لطفا ابتدا عضو کانال شوید و سپس تایید را بزنید.", reply_markup=keyboard)
 
-    if is_joined(message.chat.id):
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📋 راهنما", callback_data="help"))
-        bot.send_message(message.chat.id, "🎉 خوش آمدید به ربات ما!\nاز دکمه‌های زیر استفاده کنید:", reply_markup=markup)
-    else:
-        join_markup = types.InlineKeyboardMarkup()
-        join_markup.add(types.InlineKeyboardButton("🔗 عضویت در کانال", url=f"https://t.me/{CHANNEL.replace('@','')}"))
-        join_markup.add(types.InlineKeyboardButton("✅ تایید عضویت", callback_data="check_join"))
-        bot.send_message(message.chat.id, "🔒 برای استفاده از ربات لطفا عضو کانال شوید:", reply_markup=join_markup)
+# ======= صفحه راهنما =======
+def send_help(message):
+    text = """
+📌 *راهنمای استفاده از ربات:*
 
-# ----------- دکمه‌ها -----------
-@bot.callback_query_handler(func=lambda c: True)
-def callback(c):
-    if c.data == "check_join":
-        if is_joined(c.from_user.id):
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("📋 راهنما", callback_data="help"))
-            bot.edit_message_text("✅ عضویت تایید شد!\n🎉 خوش آمدید.", c.message.chat.id, c.message.message_id, reply_markup=markup)
+1️⃣ برای شروع از دکمه /start استفاده کنید.  
+2️⃣ حتما عضو کانال باشید تا بتوانید از ربات استفاده کنید.  
+3️⃣ لینک‌های اینستاگرام، اسپاتیفای، پینترست را ارسال کنید تا مستقیم دانلود شوند.  
+4️⃣ مراقب قوانین ربات باشید و اسپم نکنید.  
+5️⃣ اگر سوالی داشتید دکمه پشتیبانی را فشار دهید.
+
+⚠️ *اخطارها و قوانین:*  
+- ارسال پیام‌های بی‌ربط و اسپم منجر به مسدودیت می‌شود.  
+- احترام به کاربران و ادمین‌ها الزامی است.
+
+📩 هر سوال یا مشکل داشتید به ادمین پیام دهید: @King_Red1
+"""
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("بازگشت به منوی اصلی", callback_data="main_menu"))
+    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=keyboard)
+
+# ======= صفحه منوی اصلی =======
+def send_main_menu(message):
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add(KeyboardButton("راهنما"), KeyboardButton("پشتیبانی"))
+    bot.send_message(message.chat.id, "به منوی اصلی خوش آمدید.", reply_markup=keyboard)
+
+# ======= کنترل دکمه‌های شیشه‌ای =======
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    if call.data == "check_join":
+        joined = check_joined(call.from_user.id)
+        if joined:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            bot.send_message(call.message.chat.id, "تشکر از عضویت شما 🎉")
+            send_main_menu(call.message)
         else:
-            bot.answer_callback_query(c.id, "⚠️ ابتدا عضو کانال شوید.")
+            bot.answer_callback_query(call.id, "شما هنوز عضو کانال نشده‌اید!")
 
-    if c.data == "help":
-        help_text = (
-            "📚 راهنمای ربات:\n\n"
-            "✔️ ارسال متن = دریافت پاسخ هوش مصنوعی\n"
-            "✔️ ارسال لینک اینستاگرام، اسپاتیفای، پینترست = دانلود مستقیم\n"
-            "✔️ ارسال متن تصویر = ساخت عکس با متن\n"
-            "\n📌 قوانین:\n"
-            "❗ ارسال بیش از ۴ پیام در ۲ دقیقه = سکوت موقت\n"
-            "❗ استفاده غیرمجاز ممنوع!\n"
-            "\n🤖 ربات همیشه در خدمت شماست ✨"
-        )
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="back"))
-        bot.edit_message_text(help_text, c.message.chat.id, c.message.message_id, reply_markup=markup)
+    elif call.data == "main_menu":
+        send_main_menu(call.message)
 
-    if c.data == "back":
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📋 راهنما", callback_data="help"))
-        bot.edit_message_text("🎉 مجدداً خوش آمدید!\nاز دکمه‌ها استفاده کنید:", c.message.chat.id, c.message.message_id, reply_markup=markup)
-
-# ----------- پشتیبانی خصوصی -----------
-@bot.message_handler(func=lambda m: m.text == "💬 پشتیبانی")
-def support(message):
-    support_sessions[message.chat.id] = True
-    markup = types.ReplyKeyboardRemove()
-    bot.send_message(message.chat.id, "✍️ پیام خود را بنویسید:", reply_markup=markup)
-
-@bot.message_handler(func=lambda m: m.chat.id in support_sessions)
-def handle_support(message):
-    if message.text == "/cancel":
-        del support_sessions[message.chat.id]
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add("💬 پشتیبانی")
-        bot.send_message(message.chat.id, "❌ پشتیبانی لغو شد.", reply_markup=markup)
+# ======= پیام استارت =======
+@bot.message_handler(commands=["start"])
+def start_handler(message):
+    if not check_joined(message.from_user.id):
+        send_join_forced(message)
     else:
-        bot.send_message(ADMIN_ID, f"📩 پیام جدید:\n{message.text}\n👤 از: {message.chat.id}", reply_markup=types.ForceReply(selective=True))
-        del support_sessions[message.chat.id]
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add("💬 پشتیبانی")
-        bot.send_message(message.chat.id, "✅ پیام ارسال شد، منتظر پاسخ باشید.", reply_markup=markup)
+        send_main_menu(message)
 
-@bot.message_handler(func=lambda m: m.reply_to_message and str(m.reply_to_message.text).startswith("📩 پیام جدید"))
-def admin_reply(message):
-    target_id = int(message.reply_to_message.text.split("👤 از: ")[1])
-    bot.send_message(target_id, f"🛠️ پاسخ مدیر:\n{message.text}")
-
-# ----------- پردازش پیام‌ها -----------
-@bot.message_handler(func=lambda m: True)
-def handle_all(message):
-    if is_spamming(message.chat.id):
+# ======= پیام‌های متنی =======
+@bot.message_handler(func=lambda message: True)
+def message_handler(message):
+    # ضد اسپم: بیش از ۴ پیام در ۲ دقیقه ممنوع
+    now = time.time()
+    times = user_message_times.get(message.from_user.id, [])
+    times = [t for t in times if now - t < 120]
+    times.append(now)
+    user_message_times[message.from_user.id] = times
+    if len(times) > 4:
+        bot.reply_to(message, "⛔ لطفا آرام‌تر پیام دهید، اسپم ممنوع است.")
         return
 
-    user = users.find_one({"_id": message.chat.id})
-    if user and user.get("banned"):
+    text = message.text or ""
+    # دکمه راهنما
+    if text == "راهنما":
+        send_help(message)
+        return
+    # دکمه پشتیبانی
+    if text == "پشتیبانی":
+        bot.send_message(message.chat.id, "برای ارسال پیام به پشتیبانی، لطفا پیام خود را بنویسید.")
+        # اینجا باید حالت پشتیبانی را فعال کنید (کد مربوطه را بعدا اضافه کنید)
         return
 
-    if "instagram.com" in message.text:
-        url = f"https://pouriam.top/eyephp/instagram?url={message.text}"
-        r = requests.get(url).json()
-        links = r.get("links", [])
-        for link in links:
-            bot.send_message(message.chat.id, link)
+    # تشخیص لینک و ارسال به وب‌سرویس‌های دانلودر یا هوش مصنوعی
+    if "instagram.com" in text:
+        # مثال استفاده از وب‌سرویس اینستا
+        url = f"https://pouriam.top/eyephp/instagram?url={text}"
+        try:
+            res = requests.get(url).json()
+            links = res.get("links")
+            if links:
+                for link in links:
+                    bot.send_message(message.chat.id, link)
+            else:
+                bot.send_message(message.chat.id, "خطا در دریافت لینک اینستاگرام.")
+        except Exception:
+            bot.send_message(message.chat.id, "خطا در اتصال به سرویس اینستاگرام.")
+        return
+    elif "spotify.com" in text:
+        url = f"http://api.cactus-dev.ir/spotify.php?url={text}"
+        try:
+            res = requests.get(url).json()
+            mp3 = res["data"]["track"]["download_url"]
+            bot.send_message(message.chat.id, mp3)
+        except Exception:
+            bot.send_message(message.chat.id, "خطا در اتصال به سرویس اسپاتیفای.")
+        return
+    elif "pin.it" in text or "pinterest.com" in text:
+        url = f"https://haji.s2025h.space/pin/?url={text}&client_key=keyvip"
+        try:
+            res = requests.get(url).json()
+            if res.get("status"):
+                bot.send_message(message.chat.id, res["download_url"])
+            else:
+                bot.send_message(message.chat.id, "خطا در دریافت تصویر پینترست.")
+        except Exception:
+            bot.send_message(message.chat.id, "خطا در اتصال به سرویس پینترست.")
+        return
 
-    elif "spotify.com" in message.text:
-        url = f"http://api.cactus-dev.ir/spotify.php?url={message.text}"
-        r = requests.get(url).json()
-        if r["ok"]:
-            bot.send_message(message.chat.id, r["data"]["download_url"])
-
-    elif "pin.it" in message.text or "pinterest.com" in message.text:
-        url = f"https://haji.s2025h.space/pin/?url={message.text}&client_key=keyvip"
-        r = requests.get(url).json()
-        if r["status"]:
-            bot.send_message(message.chat.id, r["download_url"])
-
-    elif message.text.startswith("عکس "):
-        text = message.text.replace("عکس ", "")
-        r = requests.get(f"https://v3.api-free.ir/image/?text={text}").json()
-        bot.send_photo(message.chat.id, r["result"])
-
-    else:
-        ai_urls = [
-            f"https://starsshoptl.ir/Ai/index.php?text={message.text}",
-            f"https://starsshoptl.ir/Ai/index.php?model=gpt&text={message.text}",
-            f"https://starsshoptl.ir/Ai/index.php?model=deepseek&text={message.text}"
-        ]
-        for url in ai_urls:
-            try:
-                r = requests.get(url, timeout=10).text
-                if r.strip():
-                    bot.send_message(message.chat.id, r)
+    # fallback وب‌سرویس‌های هوش مصنوعی (اولین که جواب داد ارسال می‌شود)
+    ai_urls = [
+        "https://starsshoptl.ir/Ai/index.php?text=",
+        "https://starsshoptl.ir/Ai/index.php?model=gpt&text=",
+        "https://starsshoptl.ir/Ai/index.php?model=deepseek&text="
+    ]
+    response_sent = False
+    for api in ai_urls:
+        try:
+            r = requests.get(api + text)
+            if r.status_code == 200:
+                resp = r.text.strip()
+                if resp:
+                    bot.send_message(message.chat.id, resp)
+                    response_sent = True
                     break
-            except:
-                continue
+        except Exception:
+            continue
+    if not response_sent:
+        bot.send_message(message.chat.id, "متاسفانه پاسخ مناسبی دریافت نشد.")
 
-# ----------- پنل مدیریت -----------
-@bot.message_handler(commands=["ban"])
-def ban_user(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    msg = bot.reply_to(message, "🎯 آیدی عددی کاربر را بفرستید:")
-    bot.register_next_step_handler(msg, process_ban)
-
-def process_ban(message):
-    users.update_one({"_id": int(message.text)}, {"$set": {"banned": True}})
-    bot.send_message(int(message.text), "🚫 شما توسط مدیریت مسدود شدید.")
-
-@bot.message_handler(commands=["unban"])
-def unban_user(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    msg = bot.reply_to(message, "🎯 آیدی عددی کاربر را بفرستید:")
-    bot.register_next_step_handler(msg, process_unban)
-
-def process_unban(message):
-    users.update_one({"_id": int(message.text)}, {"$set": {"banned": False}})
-    bot.send_message(int(message.text), "✅ محدودیت شما برداشته شد.")
-
-# ----------- وب‌هوک ----------
+# ======= وب‌هوک فلاسک =======
 @app.route('/', methods=["POST"])
 def webhook():
-    if request.headers.get("content-type") == "application/json":
-        bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
+    json_str = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
     return "OK"
 
-# ----------- ران برنامه ----------
+# ======= اجرای سرور =======
 if __name__ == "__main__":
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
-    threading.Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": 5000}).start()
+    app.run(host="0.0.0.0", port=5000)
