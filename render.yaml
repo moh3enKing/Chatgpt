@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: telegram-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: TOKEN
+        value: 8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0
+      - key: MONGODB_URI
+        value: mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
+      - key: OWNER_ID
+        value: 5637609683
+      - key: CHANNEL_USERNAME
+        value: "@netgoris"
+      - key: SUPPORT_USERNAME
+        value: "@mohsenfeizi"
+      - key: WEBHOOK_URL
+        value: "https://chatgpt-qg71.onrender.com"
