@@ -31,15 +31,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # تنظیمات پایگاه داده MongoDB
-MONGODB_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 DB_NAME = "telegram_bot_db"
 
 # تنظیمات ربات
-TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
-OWNER_ID = 5637609683
-CHANNEL_USERNAME = "@netgoris"
+TOKEN = os.getenv("TOKEN", "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0")
+OWNER_ID = int(os.getenv("OWNER_ID", "5637609683"))
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@netgoris")
 CHANNEL_LINK = f"https://t.me/{CHANNEL_USERNAME[1:]}"
-SUPPORT_USERNAME = "@mohsenfeizi"  # تغییر دهید به یوزرنیم خودتان
+SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@mohsenfeizi")
 
 # URLهای سرویس‌های خارجی
 AI_SERVICES = [
@@ -66,8 +66,7 @@ except Exception as e:
     logger.error(f"Error connecting to MongoDB: {e}")
     exit()
 
-# تابع برای بررسی عضویت کاربر در کانال
-def is_user_member(user_id: int) -> bool:
+def is_user_member(user_id: int, context: CallbackContext) -> bool:
     try:
         member = context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
         return member.status in ["member", "administrator", "creator"]
@@ -75,7 +74,6 @@ def is_user_member(user_id: int) -> bool:
         logger.error(f"Error checking membership: {e}")
         return False
 
-# تابع برای ایجاد کیبورد اصلی
 def create_main_keyboard():
     keyboard = [
         [InlineKeyboardButton("راهنمای ربات 📚", callback_data="help")],
@@ -83,7 +81,6 @@ def create_main_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# تابع برای ایجاد کیبورد عضویت در کانال
 def create_join_keyboard():
     keyboard = [
         [InlineKeyboardButton("عضویت در کانال 📢", url=CHANNEL_LINK)],
@@ -91,7 +88,6 @@ def create_join_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# تابع برای ارسال پیام خوش‌آمدگویی
 def send_welcome_message(update: Update, context: CallbackContext):
     user = update.effective_user
     welcome_text = f"""
@@ -114,12 +110,10 @@ def send_welcome_message(update: Update, context: CallbackContext):
         reply_markup=create_main_keyboard()
     )
 
-# تابع برای مدیریت دستور /start
 def start(update: Update, context: CallbackContext):
     user = update.effective_user
     user_id = user.id
     
-    # ذخیره اطلاعات کاربر در دیتابیس
     user_data = {
         "user_id": user_id,
         "first_name": user.first_name,
@@ -137,14 +131,12 @@ def start(update: Update, context: CallbackContext):
         upsert=True
     )
     
-    # ارسال پیام به ادمین برای کاربر جدید
     if users_col.count_documents({"user_id": user_id}) == 1:
         context.bot.send_message(
             chat_id=OWNER_ID,
             text=f"👤 کاربر جدید:\n\nID: {user_id}\nName: {user.full_name}\nUsername: @{user.username}"
         )
     
-    # نمایش پیام عضویت در کانال
     join_text = """
 🔹 برای استفاده از ربات، لطفا در کانال ما عضو شوید.
 
@@ -156,42 +148,34 @@ def start(update: Update, context: CallbackContext):
         reply_markup=create_join_keyboard()
     )
     
-    # ذخیره ID پیام برای حذف بعدی
     context.user_data["join_message_id"] = message.message_id
-    
     return JOIN_CHANNEL
 
-# تابع برای بررسی عضویت کاربر
 def check_join(update: Update, context: CallbackContext):
     query = update.callback_query
     user_id = query.from_user.id
     
-    if is_user_member(user_id):
-        # حذف پیام عضویت
+    if is_user_member(user_id, context):
         try:
             context.bot.delete_message(
                 chat_id=query.message.chat_id,
                 message_id=context.user_data["join_message_id"]
             )
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Error deleting message: {e}")
         
-        # به روزرسانی وضعیت کاربر در دیتابیس
         users_col.update_one(
             {"user_id": user_id},
             {"$set": {"is_member": True}}
         )
         
-        # ارسال پیام خوش‌آمدگویی
         send_welcome_message(update, context)
-        
         query.answer("✅ عضویت شما تایید شد! اکنون می‌توانید از ربات استفاده کنید.")
         return MAIN_MENU
     else:
         query.answer("❌ شما هنوز در کانال عضو نشده‌اید! لطفا ابتدا عضو شوید.", show_alert=True)
         return JOIN_CHANNEL
 
-# تابع برای نمایش راهنمای ربات
 def show_help(update: Update, context: CallbackContext):
     query = update.callback_query
     help_text = """
@@ -221,19 +205,11 @@ def show_help(update: Update, context: CallbackContext):
         [InlineKeyboardButton("بازگشت ↩️", callback_data="back_to_main")]
     ]
     
-    if query:
-        query.edit_message_text(
-            text=help_text,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    else:
-        context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=help_text,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+    query.edit_message_text(
+        text=help_text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-# تابع برای مدیریت پشتیبانی
 def support(update: Update, context: CallbackContext):
     query = update.callback_query
     user = query.from_user
@@ -255,8 +231,8 @@ def support(update: Update, context: CallbackContext):
     query.edit_message_text(
         text=support_text,
         reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     
-    # ارسال پیام به ادمین
     context.bot.send_message(
         chat_id=OWNER_ID,
         text=f"📩 درخواست پشتیبانی از:\n\n👤 کاربر: {user.full_name}\n🆔 ID: {user.id}\n📌 یوزرنیم: @{user.username}"
@@ -264,24 +240,20 @@ def support(update: Update, context: CallbackContext):
     
     return SUPPORT
 
-# تابع بازگشت به منوی اصلی
 def back_to_main(update: Update, context: CallbackContext):
     query = update.callback_query
     send_welcome_message(update, context)
     return MAIN_MENU
 
-# تابع برای پردازش پیام‌های متنی
 def handle_text(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     text = update.message.text
     
-    # بررسی عضویت کاربر
     user_data = users_col.find_one({"user_id": user_id})
     if not user_data or not user_data.get("is_member", False):
         update.message.reply_text("⚠️ لطفا ابتدا در کانال عضو شوید و سپس از ربات استفاده کنید.")
         return JOIN_CHANNEL
     
-    # بررسی اسپم
     last_message_time = user_data.get("last_message_time", datetime.min)
     message_count = user_data.get("message_count", 0)
     
@@ -289,7 +261,6 @@ def handle_text(update: Update, context: CallbackContext):
         update.message.reply_text("⏳ لطفا برای جلوگیری از اسپم، 2 دقیقه صبر کنید و سپس پیام جدید ارسال کنید.")
         return
     
-    # به روزرسانی اطلاعات کاربر
     users_col.update_one(
         {"user_id": user_id},
         {
@@ -298,21 +269,17 @@ def handle_text(update: Update, context: CallbackContext):
         }
     )
     
-    # تشخیص نوع درخواست
     if text.startswith(("http://", "https://")):
         handle_url(update, context)
     else:
         handle_ai_request(update, context)
 
-# تابع برای پردازش درخواست‌های هوش مصنوعی
 def handle_ai_request(update: Update, context: CallbackContext):
     text = update.message.text
     chat_id = update.effective_chat.id
     
-    # نمایش وضعیت "در حال تایپ"
     context.bot.send_chat_action(chat_id=chat_id, action="typing")
     
-    # امتحان کردن سرویس‌های مختلف تا دریافت پاسخ
     response = None
     for service in AI_SERVICES:
         try:
@@ -330,12 +297,10 @@ def handle_ai_request(update: Update, context: CallbackContext):
     else:
         update.message.reply_text("⚠️ متاسفانه در حال حاضر سرویس هوش مصنوعی در دسترس نیست. لطفا بعدا تلاش کنید.")
 
-# تابع برای پردازش لینک‌ها
 def handle_url(update: Update, context: CallbackContext):
     url = update.message.text
     chat_id = update.effective_chat.id
     
-    # نمایش وضعیت "در حال آپلود"
     context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
     
     if "instagram.com" in url:
@@ -347,7 +312,6 @@ def handle_url(update: Update, context: CallbackContext):
     else:
         update.message.reply_text("⚠️ لینک ارسالی معتبر نیست. لطفا فقط لینک‌های اینستاگرام، اسپاتیفای یا پینترست ارسال کنید.")
 
-# تابع برای دانلود از اینستاگرام
 def download_instagram(update: Update, context: CallbackContext):
     url = update.message.text
     try:
@@ -356,7 +320,7 @@ def download_instagram(update: Update, context: CallbackContext):
         
         if "links" in data:
             media_list = []
-            for i, link in enumerate(data["links"][:10]):  # حداکثر 10 مدیا
+            for i, link in enumerate(data["links"][:10]):
                 if link.lower().endswith((".jpg", ".jpeg", ".png")):
                     if i == 0:
                         media_list.append(InputMediaPhoto(link))
@@ -381,7 +345,6 @@ def download_instagram(update: Update, context: CallbackContext):
         logger.error(f"Error downloading Instagram content: {e}")
         update.message.reply_text("⚠️ خطا در پردازش لینک اینستاگرام. لطفا بعدا تلاش کنید.")
 
-# تابع برای دانلود از اسپاتیفای
 def download_spotify(update: Update, context: CallbackContext):
     url = update.message.text
     try:
@@ -405,7 +368,6 @@ def download_spotify(update: Update, context: CallbackContext):
         logger.error(f"Error downloading Spotify track: {e}")
         update.message.reply_text("⚠️ خطا در پردازش لینک اسپاتیفای. لطفا بعدا تلاش کنید.")
 
-# تابع برای دانلود از پینترست
 def download_pinterest(update: Update, context: CallbackContext):
     url = update.message.text
     try:
@@ -434,7 +396,6 @@ def download_pinterest(update: Update, context: CallbackContext):
         logger.error(f"Error downloading Pinterest content: {e}")
         update.message.reply_text("⚠️ خطا در پردازش لینک پینترست. لطفا بعدا تلاش کنید.")
 
-# تابع برای تولید تصویر
 def generate_image(update: Update, context: CallbackContext):
     if not context.args:
         update.message.reply_text("⚠️ لطفا متن مورد نظر را بعد از دستور /image وارد کنید.\nمثال: /image گل رز")
@@ -443,7 +404,6 @@ def generate_image(update: Update, context: CallbackContext):
     text = " ".join(context.args)
     chat_id = update.effective_chat.id
     
-    # نمایش وضعیت "در حال آپلود"
     context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
     
     try:
@@ -462,7 +422,6 @@ def generate_image(update: Update, context: CallbackContext):
         logger.error(f"Error generating image: {e}")
         update.message.reply_text("⚠️ خطا در تولید تصویر. لطفا بعدا تلاش کنید.")
 
-# تابع برای پنل مدیریت
 def admin_panel(update: Update, context: CallbackContext):
     if update.effective_user.id != OWNER_ID:
         update.message.reply_text("⛔ دسترسی denied!")
@@ -481,7 +440,6 @@ def admin_panel(update: Update, context: CallbackContext):
     
     return ADMIN_PANEL
 
-# تابع برای نمایش آمار کاربران
 def show_user_stats(update: Update, context: CallbackContext):
     query = update.callback_query
     total_users = users_col.count_documents({})
@@ -503,10 +461,10 @@ def show_user_stats(update: Update, context: CallbackContext):
     query.edit_message_text(
         text=stats_text,
         reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     
     return ADMIN_PANEL
 
-# تابع برای ارسال پیام همگانی
 def start_broadcast(update: Update, context: CallbackContext):
     query = update.callback_query
     context.user_data["broadcast_mode"] = True
@@ -515,7 +473,6 @@ def start_broadcast(update: Update, context: CallbackContext):
     
     return ADMIN_PANEL
 
-# تابع برای پردازش پیام همگانی
 def process_broadcast(update: Update, context: CallbackContext):
     if "broadcast_mode" not in context.user_data:
         return
@@ -546,12 +503,15 @@ def process_broadcast(update: Update, context: CallbackContext):
     
     return admin_panel(update, context)
 
-# تابع برای بازگشت به پنل مدیریت
 def back_to_admin(update: Update, context: CallbackContext):
     query = update.callback_query
     return admin_panel(update, context)
 
-# تابع اصلی
+def error_handler(update: Update, context: CallbackContext):
+    logger.error(f"Update {update} caused error {context.error}")
+    if update.effective_message:
+        update.effective_message.reply_text("⚠️ خطایی رخ داد. لطفا دوباره تلاش کنید.")
+
 def main():
     # ایجاد آپدیتور و دیسپچر
     updater = Updater(TOKEN, use_context=True)
@@ -588,9 +548,20 @@ def main():
     dispatcher.add_handler(CommandHandler("image", generate_image))
     dispatcher.add_handler(CommandHandler("admin", admin_panel))
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
+    dispatcher.add_error_handler(error_handler)
 
-    # شروع ربات
-    updater.start_polling()
+    # شروع ربات (برای Render)
+    PORT = int(os.environ.get('PORT', 5000))
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://chatgpt-qg71.onrender.com") + "/" + TOKEN
+    
+    updater.start_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=WEBHOOK_URL,
+        drop_pending_updates=True
+    )
+    
     logger.info("Bot is running...")
     updater.idle()
 
