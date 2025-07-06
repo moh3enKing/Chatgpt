@@ -14,10 +14,10 @@ from telegram.ext import (
     Updater,
     CommandHandler,
     MessageHandler,
-    Filters,
     CallbackContext,
     CallbackQueryHandler,
-    ConversationHandler
+    ConversationHandler,
+    filters
 )
 import requests
 from datetime import datetime, timedelta
@@ -522,7 +522,7 @@ def error_handler(update: Update, context: CallbackContext):
 
 def main():
     # ایجاد آپدیتور و دیسپچر
-    updater = Updater(TOKEN, use_context=True)
+    updater = Updater(TOKEN)
     dispatcher = updater.dispatcher
 
     # ایجاد هندلر گفتگو
@@ -545,7 +545,7 @@ def main():
                 CallbackQueryHandler(start_broadcast, pattern='^broadcast$'),
                 CallbackQueryHandler(back_to_main, pattern='^back_to_main$'),
                 CallbackQueryHandler(back_to_admin, pattern='^back_to_admin$'),
-                MessageHandler(Filters.text & ~Filters.command, process_broadcast)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_broadcast)
             ]
         },
         fallbacks=[CommandHandler('start', start)]
@@ -555,7 +555,7 @@ def main():
     dispatcher.add_handler(conv_handler)
     dispatcher.add_handler(CommandHandler("image", generate_image))
     dispatcher.add_handler(CommandHandler("admin", admin_panel))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
+    dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     dispatcher.add_error_handler(error_handler)
 
     # شروع ربات (برای Render)
