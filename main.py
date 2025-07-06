@@ -105,7 +105,10 @@ def start(message):
         "ممنون که جوین کردی! 😊 حالا می‌تونی از امکانات ربات استفاده کنی.\n"
         "برای اطلاعات بیشتر، دکمه راهنما رو بزن."
     )
-    bot.reply_to(message, welcome_text, reply_markup=MAIN_KEYBOARD)
+    try:
+        bot.reply_to(message, welcome_text, reply_markup=MAIN_KEYBOARD)
+    except Exception as e:
+        logger.error(f"Error sending welcome message: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join_callback(call):
@@ -242,7 +245,10 @@ def handle_message(message):
     if len(messages) > SPAM_LIMIT:
         bot.reply_to(message, "⛔ لطفاً صبر کن! بیش از حد پیام فرستادی. ۲ دقیقه دیگه امتحان کن.")
         return
-    users_collection.update_one({"user_id": user_id}, {"$set": {"messages": messages}})
+    try:
+        users_collection.update_one({"user_id": user_id}, {"$set": {"messages": messages}})
+    except Exception as e:
+        logger.error(f"Error updating user messages: {e}")
 
     # Handle admin commands
     if user_id == ADMIN_ID:
@@ -258,8 +264,8 @@ def handle_message(message):
                 bot.reply_to(message, "لطفاً یه آیدی عددی معتبر بفرست!")
                 return
             target_user_id = int(text.strip())
-            users_collection.update_one({"user_id": user_id}, {"$set": {"admin_action": None, "target_user_id": target_user_id}})
             try:
+                users_collection.update_one({"user_id": user_id}, {"$set": {"admin_action": None, "target_user_id": target_user_id}})
                 bot.reply_to(message, "لطفاً پیام اطلاع‌رسانی به کاربر رو بفرست:")
             except Exception as e:
                 logger.error(f"Error in admin target user setup: {e}")
@@ -268,9 +274,8 @@ def handle_message(message):
             action = user.get("admin_action")
             target_user_id = user.get("target_user_id")
             notification = text
-            users_collection.update_one({"user_id": user_id}, {"$set": {"target_user_id": None}})
-
             try:
+                users_collection.update_one({"user_id": user_id}, {"$set": {"target_user_id": None}})
                 if action == "بن کاربر 🚫":
                     users_collection.update_one({"user_id": target_user_id}, {"$set": {"banned": True}})
                     bot.send_message(target_user_id, f"⛔ شما بن شدی!\nدلیل: {notification}")
@@ -377,7 +382,7 @@ def handle_ai_or_image(message, text):
 @app.route(f"/{TOKEN}", methods=["GET", "POST"])
 def webhook():
     try:
-        logger.info(f"Received {request.method} request at webhook")
+        logger.info(f"Received {request.method} request at webhook: {request.url}")
         if request.method == "POST":
             update = request.get_json()
             if update:
@@ -415,6 +420,7 @@ def set_webhook():
 application = app
 
 if __name__ == "__main__":
+    logger.info(f"Starting app on port: {os.getenv('PORT', 5000)}")
     set_webhook()
     # For local testing, use Flask's development server
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 1000)))
