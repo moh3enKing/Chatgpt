@@ -1,577 +1,408 @@
-import os
 import logging
-import pymongo
-from pymongo import MongoClient
+import re
+import time
+import asyncio
+from functools import wraps
+
 from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputMediaPhoto,
-    InputMediaVideo,
-    InputMediaAudio
+    Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatAction, InputMediaPhoto
 )
 from telegram.ext import (
-    Updater,
-    CommandHandler,
-    MessageHandler,
-    CallbackContext,
-    CallbackQueryHandler,
-    ConversationHandler,
-    filters
+    Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 )
+from telegram.error import BadRequest
+from pymongo import MongoClient
 import requests
-from datetime import datetime, timedelta
-from urllib.parse import quote
 
-# تنظیمات لاگ
+# ====== تنظیمات اولیه =======
+BOT_TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
+OWNER_ID = 5637609683
+CHANNEL_USERNAME = "@netgoris"
+MONGO_URL = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+SPAM_LIMIT = 4
+SPAM_INTERVAL = 120  # seconds
+
+# وب‌سرویس‌ها
+AI_SERVICES = [
+    "https://starsshoptl.ir/Ai/index.php?text=",
+    "https://starsshoptl.ir/Ai/index.php?model=gpt&text=",
+    "https://starsshoptl.ir/Ai/index.php?model=deepseek&text=",
+]
+
+INSTAGRAM_API = "https://pouriam.top/eyephp/instagram?url="
+SPOTIFY_API = "http://api.cactus-dev.ir/spotify.php?url="
+PINTEREST_API = "https://haji.s2025h.space/pin/?url={}&client_key=keyvip"
+IMAGE_API = "https://v3.api-free.ir/image/?text="
+
+# ======= لاگینگ ========
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# تنظیمات پایگاه داده MongoDB
-MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
-DB_NAME = "telegram_bot_db"
+# ====== اتصال به دیتابیس =======
+client = MongoClient(MONGO_URL)
+db = client['telegrambot']
+users_col = db['users']
+support_col = db['support']
 
-# تنظیمات ربات
-TOKEN = os.getenv("TOKEN", "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0")
-OWNER_ID = int(os.getenv("OWNER_ID", "5637609683"))
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@netgoris")
-CHANNEL_LINK = f"https://t.me/{CHANNEL_USERNAME[1:]}"
-SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@mohsenfeizi")
+# ====== ضد اسپم =======
+user_message_times = {}
 
-# URLهای سرویس‌های خارجی
-AI_SERVICES = [
-    "https://starsshoptl.ir/Ai/index.php?text=",
-    "https://starsshoptl.ir/Ai/index.php?model=gpt&text=",
-    "https://starsshoptl.ir/Ai/index.php?model=deepseek&text="
-]
-INSTA_DOWNLOADER = "https://pouriam.top/eyephp/instagram?url="
-SPOTIFY_DOWNLOADER = "http://api.cactus-dev.ir/spotify.php?url="
-PINTEREST_DOWNLOADER = "https://haji.s2025h.space/pin/?url={}&client_key=keyvip"
-IMAGE_GENERATOR = "https://v3.api-free.ir/image/?text="
+def anti_spam(func):
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        now = time.time()
+        times = user_message_times.get(user_id, [])
+        times = [t for t in times if now - t < SPAM_INTERVAL]
+        times.append(now)
+        user_message_times[user_id] = times
+        if len(times) > SPAM_LIMIT:
+            try:
+                await update.message.reply_text(
+                    "⚠️ لطفاً آرامش داشته باشید! به‌دلیل ارسال پیام‌های متعدد، ۲ دقیقه سکوت فعال شد."
+                )
+                return
+            except:
+                return
+        return await func(update, context)
+    return wrapper
 
-# حالت‌های گفتگو
-JOIN_CHANNEL, MAIN_MENU, SUPPORT, ADMIN_PANEL = range(4)
-
-# اتصال به MongoDB
-try:
-    client = MongoClient(MONGODB_URI)
-    db = client[DB_NAME]
-    users_col = db["users"]
-    admins_col = db["admins"]
-    logger.info("Connected to MongoDB successfully!")
-except Exception as e:
-    logger.error(f"Error connecting to MongoDB: {e}")
-    exit()
-
-def is_user_member(user_id: int, context: CallbackContext) -> bool:
+# ====== چک عضویت =======
+async def check_joined(user_id: int, bot):
     try:
-        member = context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
-        return member.status in ["member", "administrator", "creator"]
-    except Exception as e:
-        logger.error(f"Error checking membership: {e}")
+        member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+        if member.status in ['member', 'administrator', 'creator']:
+            return True
+        return False
+    except:
         return False
 
-def create_main_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("راهنمای ربات 📚", callback_data="help")],
-        [InlineKeyboardButton("پشتیبانی 👨‍💻", callback_data="support")]
+# ====== کیبورد جین اجباری =======
+def join_keyboard():
+    buttons = [
+        [InlineKeyboardButton("📢 کانال رسمی", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")],
+        [InlineKeyboardButton("✅ عضو شدم", callback_data="joined")]
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup(buttons)
 
-def create_join_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("عضویت در کانال 📢", url=CHANNEL_LINK)],
-        [InlineKeyboardButton("تایید عضویت ✅", callback_data="check_join")]
+# ====== کیبورد اصلی =======
+def main_keyboard():
+    buttons = [
+        [InlineKeyboardButton("📖 راهنما", callback_data="help")],
+        [InlineKeyboardButton("🛠 پشتیبانی", callback_data="support")]
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup(buttons)
 
-def send_welcome_message(update: Update, context: CallbackContext):
-    user = update.effective_user
-    welcome_text = f"""
-سلام {user.first_name} عزیز! 👋
+# ====== متن‌ها =======
+WELCOME_TEXT = f"""🌟 خوش آمدید به ربات حرفه‌ای ما!
 
-به ربات هوش مصنوعی ما خوش آمدید! 🤖✨
+اینجا می‌توانید به امکانات هوش مصنوعی، دانلودر پیشرفته و ابزارهای جذاب به‌صورت رایگان دسترسی داشته باشید.
 
-شما می‌توانید از این ربات برای:
-- چت هوشمند با هوش مصنوعی
-- دانلود محتوای اینستاگرام، اسپاتیفای و پینترست
-- تولید تصاویر با هوش مصنوعی
+برای شروع، لطفاً عضو کانال ما شوید.
 
-استفاده کنید.
+کانال رسمی: {CHANNEL_USERNAME}
 
-لطفا برای شروع از دکمه‌های زیر استفاده نمایید.
+بعد از عضویت، روی دکمه "✅ عضو شدم" کلیک کنید.
 """
-    context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=welcome_text,
-        reply_markup=create_main_keyboard()
-    )
 
-def start(update: Update, context: CallbackContext):
+HELP_TEXT = f"""
+📚 راهنمای جامع استفاده از ربات:
+
+سلام دوست عزیز، خوش اومدی به ربات حرفه‌ای ما! 😍
+
+اینجا می‌تونی از کلی امکانات جذاب بهره ببری:
+
+🔹 امکانات اصلی:
+
+✅ گفت‌وگوی هوشمند  
+کافیه سوال، درخواست یا متن خودتو بفرستی، هوش مصنوعی سریع جواب می‌ده.
+
+✅ دانلود از اینستاگرام، اسپاتیفای، پینترست  
+برای دانلود فقط لینک بفرست، ربات خودش تشخیص می‌ده و محتوا رو مستقیم می‌فرسته:
+• اینستاگرام → دانلود عکس یا ویدیو  
+• اسپاتیفای → دانلود آهنگ با کیفیت  
+• پینترست → دانلود عکس با کیفیت  
+
+✅ ساخت عکس  
+دستور: ساخت عکس متن شما  
+توجه: متن باید انگلیسی باشه، مثال: ساخت عکس flower
+
+✅ ارتباط مستقیم با مدیر  
+از دکمه "پشتیبانی" در چت خصوصی استفاده کن.
+
+⚠️ قوانین ربات:
+🚫 ارسال ۴ پیام پشت هم باعث سکوت ۲ دقیقه‌ای می‌شه  
+🚫 فقط لینک‌های اینستاگرام، اسپاتیفای، پینترست یا دستور ساخت عکس مجازه  
+🚫 تبلیغ، توهین، ارسال لینک ناشناس = مسدودیت دائم  
+
+🛠 ربات همواره در حال به‌روزرسانی و بهبود هست و در نسخه اولیه قرار داره.
+
+🕰 ربات همیشه فعاله و آماده پاسخ‌گویی به توئه  
+ممنون که از ربات ما استفاده می‌کنی، بهترین‌ها برات آرزو می‌کنیم! 💙
+"""
+
+SUPPORT_TEXT = "برای ارتباط با مدیر، پیام خود را ارسال کنید. برای خروج از پشتیبانی /لغو را بفرستید."
+
+ALWAYS_SERVING_TEXT = """
+💡 همواره در خدمت شما هستیم!
+
+برای بازگشت، از منوی پایین استفاده کنید.
+"""
+
+# ====== بررسی لینک‌ها =======
+def detect_link_type(text: str):
+    text = text.lower()
+    if "instagram.com" in text:
+        return "instagram"
+    elif "spotify.com" in text:
+        return "spotify"
+    elif "pin.it" in text or "pinterest.com" in text:
+        return "pinterest"
+    elif re.match(r'^ساخت عکس ', text):
+        return "make_image"
+    else:
+        return "unknown"
+
+# ====== پاسخ هوش مصنوعی =======
+async def ask_ai(text):
+    for api in AI_SERVICES:
+        try:
+            url = api + requests.utils.quote(text)
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                result = r.text.strip()
+                if result:
+                    return result
+        except Exception as e:
+            continue
+    return "متاسفانه پاسخ مناسبی دریافت نشد، لطفاً دوباره تلاش کنید."
+
+# ====== دانلود اینستا =======
+def insta_download(url):
+    try:
+        r = requests.get(INSTAGRAM_API + url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            links = data.get("links", [])
+            if links:
+                return links[0]  # لینک مستقیم اولین فایل
+        return None
+    except:
+        return None
+
+# ====== دانلود اسپاتیفای =======
+def spotify_download(url):
+    try:
+        r = requests.get(SPOTIFY_API + url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("ok") and "data" in data and "track" in data["data"]:
+                return data["data"]["track"].get("download_url")
+        return None
+    except:
+        return None
+
+# ====== دانلود پینترست =======
+def pinterest_download(url):
+    try:
+        full_url = PINTEREST_API.format(url)
+        r = requests.get(full_url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("status"):
+                return data.get("download_url")
+        return None
+    except:
+        return None
+
+# ====== ساخت عکس =======
+def make_image(text):
+    try:
+        url = IMAGE_API + requests.utils.quote(text)
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("ok"):
+                return data.get("result")
+        return None
+    except:
+        return None
+
+# ====== استارت و جین اجباری =======
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     user = update.effective_user
-    user_id = user.id
-    
-    user_data = {
-        "user_id": user_id,
-        "first_name": user.first_name,
-        "last_name": user.last_name,
-        "username": user.username,
-        "join_date": datetime.now(),
-        "last_activity": datetime.now(),
-        "message_count": 0,
-        "is_member": False
-    }
-    
-    users_col.update_one(
-        {"user_id": user_id},
-        {"$set": user_data},
-        upsert=True
-    )
-    
-    if users_col.count_documents({"user_id": user_id}) == 1:
-        context.bot.send_message(
+
+    # ثبت کاربر در دیتابیس اگر وجود ندارد
+    if not users_col.find_one({"user_id": user_id}):
+        users_col.insert_one({"user_id": user_id, "first_seen": time.time(), "banned": False})
+
+        # ارسال پیام به ادمین برای کاربر جدید
+        await context.bot.send_message(
             chat_id=OWNER_ID,
-            text=f"👤 کاربر جدید:\n\nID: {user_id}\nName: {user.full_name}\nUsername: @{user.username}"
+            text=f"👤 کاربر جدید: [{user.first_name}](tg://user?id={user_id})\nآیدی: `{user_id}`",
+            parse_mode="Markdown"
         )
-    
-    join_text = """
-🔹 برای استفاده از ربات، لطفا در کانال ما عضو شوید.
 
-پس از عضویت، روی دکمه «تایید عضویت» کلیک کنید.
-"""
-    message = context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=join_text,
-        reply_markup=create_join_keyboard()
+    # چک عضویت کانال
+    joined = await check_joined(user_id, context.bot)
+    if not joined:
+        # ارسال پیام جین اجباری با دکمه‌ها
+        msg = await update.message.reply_text(
+            f"⚠️ لطفاً ابتدا عضو کانال {CHANNEL_USERNAME} شوید تا بتوانید از ربات استفاده کنید.",
+            reply_markup=join_keyboard()
+        )
+        context.user_data["join_message_id"] = msg.message_id
+        return
+
+    # ارسال پیام خوش آمد
+    await update.message.reply_text(
+        HELP_TEXT,
+        reply_markup=main_keyboard()
     )
-    
-    context.user_data["join_message_id"] = message.message_id
-    return JOIN_CHANNEL
 
-def check_join(update: Update, context: CallbackContext):
+# ====== تایید جین شدن =======
+async def joined_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
-    
-    if is_user_member(user_id, context):
-        try:
-            context.bot.delete_message(
-                chat_id=query.message.chat_id,
-                message_id=context.user_data["join_message_id"]
-            )
-        except Exception as e:
-            logger.error(f"Error deleting message: {e}")
-        
-        users_col.update_one(
-            {"user_id": user_id},
-            {"$set": {"is_member": True}}
+    await query.answer()
+
+    joined = await check_joined(user_id, context.bot)
+    if joined:
+        # حذف پیام جین اجباری
+        if "join_message_id" in context.user_data:
+            try:
+                await context.bot.delete_message(chat_id=query.message.chat_id, message_id=context.user_data["join_message_id"])
+            except BadRequest:
+                pass
+
+        # ارسال پیام خوش آمد با راهنما
+        await query.message.reply_text(
+            HELP_TEXT,
+            reply_markup=main_keyboard()
         )
-        
-        send_welcome_message(update, context)
-        query.answer("✅ عضویت شما تایید شد! اکنون می‌توانید از ربات استفاده کنید.")
-        return MAIN_MENU
     else:
-        query.answer("❌ شما هنوز در کانال عضو نشده‌اید! لطفا ابتدا عضو شوید.", show_alert=True)
-        return JOIN_CHANNEL
+        await query.message.reply_text("❌ هنوز عضو کانال نشده‌اید. لطفاً ابتدا عضو شوید.")
 
-def show_help(update: Update, context: CallbackContext):
+# ====== نمایش راهنما =======
+async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    help_text = """
-📚 راهنمای استفاده از ربات:
-
-🔹 چت هوشمند:
-فقط متن خود را ارسال کنید تا ربات پاسخ دهد.
-
-🔹 دانلود محتوا:
-• اینستاگرام: ارسال لینک پست/ریلز/استوری
-• اسپاتیفای: ارسال لینک آهنگ
-• پینترست: ارسال لینک پین
-
-🔹 تولید تصویر:
-ارسال دستور /image به همراه متن مورد نظر
-مثال: /image گل رز
-
-⚠️ قوانین و هشدارها:
-1. استفاده از ربات برای اهداف غیراخلاقی ممنوع است.
-2. ارسال اسپم و پیام‌های مکرر باعث محدودیت دسترسی می‌شود.
-3. ربات را برای دیگران فوروارد نکنید.
-4. در صورت مشاهده هرگونه مشکل با پشتیبانی در ارتباط باشید.
-
-ما همیشه در خدمت شما هستیم! 🤝
-"""
-    keyboard = [
-        [InlineKeyboardButton("بازگشت ↩️", callback_data="back_to_main")]
-    ]
-    
-    query.edit_message_text(
-        text=help_text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    await query.answer()
+    await query.edit_message_text(
+        HELP_TEXT,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("بازگشت", callback_data="main_menu")]
+        ])
     )
 
-def support(update: Update, context: CallbackContext):
+# ====== بازگشت به منوی اصلی =======
+async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user = query.from_user
-    
-    support_text = f"""
-پشتیبانی 👨‍💻
-
-شما می‌توانید سوالات و مشکلات خود را از طریق ایدی زیر با ما در میان بگذارید:
-
-{SUPPORT_USERNAME}
-
-لطفا پیام خود را به صورت مستقیم برای پشتیبانی ارسال کنید.
-"""
-    
-    keyboard = [
-        [InlineKeyboardButton("بازگشت ↩️", callback_data="back_to_main")]
-    ]
-    
-    query.edit_message_text(
-        text=support_text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    await query.answer()
+    await query.edit_message_text(
+        HELP_TEXT,
+        reply_markup=main_keyboard()
     )
-    
-    context.bot.send_message(
-        chat_id=OWNER_ID,
-        text=f"📩 درخواست پشتیبانی از:\n\n👤 کاربر: {user.full_name}\n🆔 ID: {user.id}\n📌 یوزرنیم: @{user.username}"
-    )
-    
-    return SUPPORT
 
-def back_to_main(update: Update, context: CallbackContext):
-    query = update.callback_query
-    send_welcome_message(update, context)
-    return MAIN_MENU
-
-def handle_text(update: Update, context: CallbackContext):
+# ====== پشتیبانی =======
+async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text
-    
+    if user_id != OWNER_ID:
+        await update.message.reply_text("⚠️ این بخش فقط برای مدیر ربات فعال است.")
+        return
+    await update.message.reply_text(SUPPORT_TEXT)
+    context.user_data["in_support"] = True
+
+async def support_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "in_support" not in context.user_data or not context.user_data["in_support"]:
+        return
+
+    message = update.message
+    if message.text and message.reply_to_message and message.reply_to_message.from_user.id != OWNER_ID:
+        # پیام پاسخ به کاربر
+        target_user_id = message.reply_to_message.from_user.id
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=message.text,
+                reply_to_message_id=message.reply_to_message.message_id
+            )
+            await message.reply_text("پیام شما به کاربر ارسال شد.")
+        except Exception as e:
+            await message.reply_text(f"خطا در ارسال پیام به کاربر: {e}")
+    elif message.text == "/لغو":
+        context.user_data["in_support"] = False
+        await message.reply_text("پشتیبانی لغو شد.")
+    else:
+        await message.reply_text("برای پاسخ دادن به کاربر، پیام خود را به صورت ریپلای ارسال کنید یا /لغو را بفرستید.")
+
+# ====== مدیریت پیام‌ها =======
+@anti_spam
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text or ""
+
+    # چک بن بودن کاربر
     user_data = users_col.find_one({"user_id": user_id})
-    if not user_data or not user_data.get("is_member", False):
-        update.message.reply_text("⚠️ لطفا ابتدا در کانال عضو شوید و سپس از ربات استفاده کنید.")
-        return JOIN_CHANNEL
-    
-    last_message_time = user_data.get("last_message_time", datetime.min)
-    message_count = user_data.get("message_count", 0)
-    
-    if (datetime.now() - last_message_time) < timedelta(minutes=2) and message_count >= 4:
-        update.message.reply_text("⏳ لطفا برای جلوگیری از اسپم، 2 دقیقه صبر کنید و سپس پیام جدید ارسال کنید.")
+    if user_data and user_data.get("banned", False):
+        await update.message.reply_text("⚠️ شما مسدود شده‌اید و نمی‌توانید از ربات استفاده کنید.")
         return
-    
-    users_col.update_one(
-        {"user_id": user_id},
-        {
-            "$set": {"last_message_time": datetime.now()},
-            "$inc": {"message_count": 1}
-        }
-    )
-    
-    if text.startswith(("http://", "https://")):
-        handle_url(update, context)
-    else:
-        handle_ai_request(update, context)
 
-def handle_ai_request(update: Update, context: CallbackContext):
-    text = update.message.text
-    chat_id = update.effective_chat.id
-    
-    context.bot.send_chat_action(chat_id=chat_id, action="typing")
-    
-    response = None
-    for service in AI_SERVICES:
-        try:
-            url = service + quote(text)
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200 and resp.text.strip():
-                response = resp.text
-                break
-        except Exception as e:
-            logger.error(f"Error with AI service {service}: {e}")
-            continue
-    
-    if response:
-        update.message.reply_text(response)
-    else:
-        update.message.reply_text("⚠️ متاسفانه در حال حاضر سرویس هوش مصنوعی در دسترس نیست. لطفا بعدا تلاش کنید.")
-
-def handle_url(update: Update, context: CallbackContext):
-    url = update.message.text
-    chat_id = update.effective_chat.id
-    
-    context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
-    
-    if "instagram.com" in url:
-        download_instagram(update, context)
-    elif "spotify.com" in url:
-        download_spotify(update, context)
-    elif "pinterest.com" in url:
-        download_pinterest(update, context)
-    else:
-        update.message.reply_text("⚠️ لینک ارسالی معتبر نیست. لطفا فقط لینک‌های اینستاگرام، اسپاتیفای یا پینترست ارسال کنید.")
-
-def download_instagram(update: Update, context: CallbackContext):
-    url = update.message.text
-    try:
-        response = requests.get(INSTA_DOWNLOADER + url, timeout=15)
-        data = response.json()
-        
-        if "links" in data:
-            media_list = []
-            for i, link in enumerate(data["links"][:10]):
-                if link.lower().endswith((".jpg", ".jpeg", ".png")):
-                    if i == 0:
-                        media_list.append(InputMediaPhoto(link))
-                    else:
-                        media_list.append(InputMediaPhoto(link))
-                elif link.lower().endswith((".mp4", ".mov")):
-                    if i == 0:
-                        media_list.append(InputMediaVideo(link))
-                    else:
-                        media_list.append(InputMediaVideo(link))
-            
-            if media_list:
-                context.bot.send_media_group(
-                    chat_id=update.effective_chat.id,
-                    media=media_list
-                )
-            else:
-                update.message.reply_text("⚠️ محتوای قابل دانلود یافت نشد.")
-        else:
-            update.message.reply_text("⚠️ خطا در دریافت محتوای اینستاگرام. لطفا لینک را بررسی کنید.")
-    except Exception as e:
-        logger.error(f"Error downloading Instagram content: {e}")
-        update.message.reply_text("⚠️ خطا در پردازش لینک اینستاگرام. لطفا بعدا تلاش کنید.")
-
-def download_spotify(update: Update, context: CallbackContext):
-    url = update.message.text
-    try:
-        response = requests.get(SPOTIFY_DOWNLOADER + url, timeout=15)
-        data = response.json()
-        
-        if data.get("ok", False):
-            track = data["data"]["track"]
-            caption = f"🎵 {track['name']}\n🎤 {track['artists']}\n⏳ مدت: {track['duration']}"
-            
-            # محاسبه مدت زمان به ثانیه
-            duration_parts = list(map(int, track["duration"].split(":")))
-            if len(duration_parts) == 2:
-                duration = duration_parts[0] * 60 + duration_parts[1]
-            else:
-                duration = 0
-            
-            context.bot.send_audio(
-                chat_id=update.effective_chat.id,
-                audio=track["download_url"],
-                caption=caption,
-                title=track["name"],
-                performer=track["artists"],
-                duration=duration
-            )
-        else:
-            update.message.reply_text("⚠️ خطا در دریافت آهنگ اسپاتیفای. لطفا لینک را بررسی کنید.")
-    except Exception as e:
-        logger.error(f"Error downloading Spotify track: {e}")
-        update.message.reply_text("⚠️ خطا در پردازش لینک اسپاتیفای. لطفا بعدا تلاش کنید.")
-
-def download_pinterest(update: Update, context: CallbackContext):
-    url = update.message.text
-    try:
-        response = requests.get(PINTEREST_DOWNLOADER.format(quote(url)), timeout=15)
-        data = response.json()
-        
-        if data.get("status", False):
-            if data["download_url"].lower().endswith((".jpg", ".jpeg", ".png")):
-                context.bot.send_photo(
-                    chat_id=update.effective_chat.id,
-                    photo=data["download_url"]
-                )
-            elif data["download_url"].lower().endswith((".mp4", ".mov")):
-                context.bot.send_video(
-                    chat_id=update.effective_chat.id,
-                    video=data["download_url"]
-                )
-            else:
-                context.bot.send_document(
-                    chat_id=update.effective_chat.id,
-                    document=data["download_url"]
-                )
-        else:
-            update.message.reply_text("⚠️ خطا در دریافت محتوای پینترست. لطفا لینک را بررسی کنید.")
-    except Exception as e:
-        logger.error(f"Error downloading Pinterest content: {e}")
-        update.message.reply_text("⚠️ خطا در پردازش لینک پینترست. لطفا بعدا تلاش کنید.")
-
-def generate_image(update: Update, context: CallbackContext):
-    if not context.args:
-        update.message.reply_text("⚠️ لطفا متن مورد نظر را بعد از دستور /image وارد کنید.\nمثال: /image گل رز")
+    # چک عضویت
+    joined = await check_joined(user_id, context.bot)
+    if not joined:
+        # جین اجباری دوباره
+        msg = await update.message.reply_text(
+            f"⚠️ لطفاً ابتدا عضو کانال {CHANNEL_USERNAME} شوید تا بتوانید از ربات استفاده کنید.",
+            reply_markup=join_keyboard()
+        )
+        context.user_data["join_message_id"] = msg.message_id
         return
-    
-    text = " ".join(context.args)
-    chat_id = update.effective_chat.id
-    
-    context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
-    
-    try:
-        response = requests.get(IMAGE_GENERATOR + quote(text), timeout=20)
-        data = response.json()
-        
-        if data.get("ok", False):
-            context.bot.send_photo(
-                chat_id=chat_id,
-                photo=data["result"],
-                caption=f"تصویر تولید شده برای: {text}"
-            )
+
+    # تشخیص نوع پیام
+    link_type = detect_link_type(text)
+
+    if link_type == "instagram":
+        dl = insta_download(text)
+        if dl:
+            await update.message.reply_chat_action(ChatAction.UPLOAD_VIDEO)
+            await update.message.reply_video(dl)
         else:
-            update.message.reply_text("⚠️ خطا در تولید تصویر. لطفا بعدا تلاش کنید.")
-    except Exception as e:
-        logger.error(f"Error generating image: {e}")
-        update.message.reply_text("⚠️ خطا در تولید تصویر. لطفا بعدا تلاش کنید.")
-
-def admin_panel(update: Update, context: CallbackContext):
-    if update.effective_user.id != OWNER_ID:
-        update.message.reply_text("⛔ دسترسی denied!")
+            await update.message.reply_text("❌ خطا در دانلود از اینستاگرام. لینک معتبر ارسال کنید.")
         return
-    
-    keyboard = [
-        [InlineKeyboardButton("آمار کاربران 📊", callback_data="user_stats")],
-        [InlineKeyboardButton("ارسال پیام به همه 📢", callback_data="broadcast")],
-        [InlineKeyboardButton("بازگشت ↩️", callback_data="back_to_main")]
-    ]
-    
-    update.message.reply_text(
-        "پنل مدیریت 👨‍💼",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    
-    return ADMIN_PANEL
 
-def show_user_stats(update: Update, context: CallbackContext):
-    query = update.callback_query
-    total_users = users_col.count_documents({})
-    active_users = users_col.count_documents({"last_activity": {"$gt": datetime.now() - timedelta(days=7)}})
-    members = users_col.count_documents({"is_member": True})
-    
-    stats_text = f"""
-📊 آمار کاربران:
-
-👥 کاربران کل: {total_users}
-🟢 کاربران فعال (7 روز اخیر): {active_users}
-✅ اعضای کانال: {members}
-"""
-    
-    keyboard = [
-        [InlineKeyboardButton("بازگشت ↩️", callback_data="back_to_admin")]
-    ]
-    
-    query.edit_message_text(
-        text=stats_text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    
-    return ADMIN_PANEL
-
-def start_broadcast(update: Update, context: CallbackContext):
-    query = update.callback_query
-    context.user_data["broadcast_mode"] = True
-    
-    query.edit_message_text("لطفا پیامی که می‌خواهید برای همه کاربران ارسال کنید را بنویسید:")
-    
-    return ADMIN_PANEL
-
-def process_broadcast(update: Update, context: CallbackContext):
-    if "broadcast_mode" not in context.user_data:
+    elif link_type == "spotify":
+        dl = spotify_download(text)
+        if dl:
+            await update.message.reply_chat_action(ChatAction.UPLOAD_AUDIO)
+            await update.message.reply_audio(dl)
+        else:
+            await update.message.reply_text("❌ خطا در دانلود از اسپاتیفای. لینک معتبر ارسال کنید.")
         return
-    
-    message = update.message.text
-    users = users_col.find({})
-    success = 0
-    failed = 0
-    
-    update.message.reply_text("⏳ در حال ارسال پیام به کاربران...")
-    
-    for user in users:
-        try:
-            context.bot.send_message(
-                chat_id=user["user_id"],
-                text=message
-            )
-            success += 1
-        except Exception as e:
-            logger.error(f"Error sending to user {user['user_id']}: {e}")
-            failed += 1
-    
-    del context.user_data["broadcast_mode"]
-    
-    update.message.reply_text(
-        f"✅ ارسال پیام همگانی تکمیل شد:\n\nارسال موفق: {success}\nارسال ناموفق: {failed}"
-    )
-    
-    return admin_panel(update, context)
 
-def back_to_admin(update: Update, context: CallbackContext):
-    query = update.callback_query
-    return admin_panel(update, context)
+    elif link_type == "pinterest":
+        dl = pinterest_download(text)
+        if dl:
+            await update.message.reply_chat_action(ChatAction.UPLOAD_PHOTO)
+            await update.message.reply_photo(dl)
+        else:
+            await update.message.reply_text("❌ خطا در دانلود از پینترست. لینک معتبر ارسال کنید.")
+        return
 
-def error_handler(update: Update, context: CallbackContext):
-    logger.error(f"Update {update} caused error {context.error}")
-    if update.effective_message:
-        update.effective_message.reply_text("⚠️ خطایی رخ داد. لطفا دوباره تلاش کنید.")
-
-def main():
-    # ایجاد آپدیتور و دیسپچر
-    updater = Updater(TOKEN)
-    dispatcher = updater.dispatcher
-
-    # ایجاد هندلر گفتگو
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            JOIN_CHANNEL: [
-                CallbackQueryHandler(check_join, pattern='^check_join$')
-            ],
-            MAIN_MENU: [
-                CallbackQueryHandler(show_help, pattern='^help$'),
-                CallbackQueryHandler(support, pattern='^support$'),
-                CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
-            ],
-            SUPPORT: [
-                CallbackQueryHandler(back_to_main, pattern='^back_to_main$')
-            ],
-            ADMIN_PANEL: [
-                CallbackQueryHandler(show_user_stats, pattern='^user_stats$'),
-                CallbackQueryHandler(start_broadcast, pattern='^broadcast$'),
-                CallbackQueryHandler(back_to_main, pattern='^back_to_main$'),
-                CallbackQueryHandler(back_to_admin, pattern='^back_to_admin$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_broadcast)
-            ]
-        },
-        fallbacks=[CommandHandler('start', start)]
-    )
-
-    # ثبت هندلرها
-    dispatcher.add_handler(conv_handler)
-    dispatcher.add_handler(CommandHandler("image", generate_image))
-    dispatcher.add_handler(CommandHandler("admin", admin_panel))
-    dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    dispatcher.add_error_handler(error_handler)
-
-    # شروع ربات (برای Render)
-    PORT = int(os.environ.get('PORT', 5000))
-    WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://chatgpt-qg71.onrender.com") + "/" + TOKEN
-    
-    updater.start_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=TOKEN,
-        webhook_url=WEBHOOK_URL,
-        drop_pending_updates=True
-    )
-    
-    logger.info("Bot is running...")
-    updater.idle()
-
-if __name__ == '__main__':
-    main()
+    elif link_type == "make_image":
+        # دستور ساخت عکس
+        # متن بعد از "ساخت عکس "
+        img_text = text[8:].strip()
+        if not img_text:
+            await update.message.reply_text("❌ لطفاً متن انگلیسی برای ساخت عکس وارد کنید. مثال: ساخت عکس flower")
+            return
+        url = make_image(img_text)
+        if url:
+            await update.message.reply_chat_action(ChatAction.UPLOAD_PHOTO)
+            await update.message.reply_photo(url)
+        else:
+            await update.message.reply_text("
