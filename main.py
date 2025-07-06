@@ -8,7 +8,7 @@ BOT_TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
 CHANNEL_USERNAME = "@netgoris"
 ADMIN_ID = 5637609683
 MONGO_URL = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-WEBHOOK_URL = "https://test1-je97.onrender.com"
+WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
 
 # ---------------------- اتصال ----------------------
 bot = telebot.TeleBot(BOT_TOKEN)
