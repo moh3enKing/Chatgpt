@@ -1,4 +1,4 @@
-pyTelegramBotAPI==4.15.4
 Flask==2.3.2
+pyTelegramBotAPI==4.15.4
 pymongo==4.6.3
-dnspython
+dnspython==2.4.2
