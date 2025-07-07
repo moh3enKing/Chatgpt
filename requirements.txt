@@ -1,5 +1,4 @@
-python-telegram-bot[webhooks]==20.8
-Flask
+python-telegram-bot[webhooks]
 aiohttp
 pymongo
-dnspython
+flask
