@@ -188,4 +188,194 @@ def guide(message):
         "⚠️ **قوانین و اخطارها**:\n"
         "1. از ارسال لینک‌های غیرمجاز (به جز اینستاگرام، اسپاتیفای، پینترست) خودداری کنید.\n"
         "2. ارسال بیش از ۴ پیام در ۲ دقیقه باعث مسدود شدن موقت می‌شود.\n"
-        "3. از ارسال محتوای غیرقانونی یا توهین‌آمیز پرهیز کنید.\n\n Ascending: [object Object]
+        "3. از ارسال محتوای غیرقانونی یا توهین‌آمیز پرهیز کنید.\n\n"
+        "📞 برای پشتیبانی، دکمه پشتیبانی را بزنید."
+    )
+    try:
+        bot.edit_message_text(guide_text, message.chat.id, message.message_id, reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🙏 ما همیشه در خدمتیم", callback_data="final_message")))
+    except:
+        bot.send_message(message.chat.id, guide_text, reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🙏 ما همیشه در خدمتیم", callback_data="final_message")))
+
+# هندلر پیام نهایی
+@bot.callback_query_handler(func=lambda call: call.data == "final_message")
+def final_message(call):
+    final_text = (
+        "🙏 **ما همیشه در خدمت شما هستیم!**\n"
+        "از همراهی شما سپاسگزاریم. هر زمان نیاز به کمک داشتید، با پشتیبانی تماس بگیرید! 😊"
+    )
+    try:
+        bot.edit_message_text(final_text, call.message.chat.id, call.message.message_id, reply_markup=main_keyboard())
+    except Exception as e:
+        logger.error(f"Final message error: {e}")
+
+# هندلر پشتیبانی
+@bot.message_handler(func=lambda message: message.text == "📞 پشتیبانی")
+def support(message):
+    try:
+        users_collection.update_one({"user_id": message.from_user.id}, {"$set": {"support_mode": True}}, upsert=True)
+        bot.send_message(message.chat.id, "لطفاً پیام خود را برای پشتیبانی ارسال کنید یا برای خروج /cancel را بزنید.", reply_markup=ReplyKeyboardRemove())
+    except Exception as e:
+        logger.error(f"Support handler error: {e}")
+
+# هندلر لغو پشتیبانی
+@bot.message_handler(commands=["cancel"])
+def cancel_support(message):
+    try:
+        users_collection.update_one({"user_id": message.from_user.id}, {"$set": {"support_mode": False}})
+        bot.send_message(message.chat.id, "پشتیبانی لغو شد.", reply_markup=main_keyboard())
+    except Exception as e:
+        logger.error(f"Cancel support error: {e}")
+
+# هندلر پاسخ ادمین
+@bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID and message.reply_to_message)
+def admin_reply(message):
+    try:
+        user_id = message.reply_to_message.forward_from.id if message.reply_to_message.forward_from else None
+        if user_id:
+            bot.send_message(user_id, message.text, reply_to_message_id=message.reply_to_message.message_id)
+            users_collection.update_one({"user_id": user_id}, {"$set": {"support_mode": False}})
+            bot.send_message(user_id, "پشتیبانی به پایان رسید.", reply_markup=main_keyboard())
+            bot.send_message(ADMIN_ID, "پاسخ برای کاربر ارسال شد.")
+    except Exception as e:
+        logger.error(f"Admin reply error: {e}")
+
+# هندلر پنل ادمین
+@bot.message_handler(commands=["admin"])
+def admin_panel(message):
+    try:
+        if message.from_user.id == ADMIN_ID:
+            bot.send_message(message.chat.id, "پنل مدیریت:", reply_markup=admin_keyboard())
+        else:
+            bot.send_message(message.chat.id, "❌ دسترسی غیرمجاز!")
+    except Exception as e:
+        logger.error(f"Admin panel error: {e}")
+
+# هندلر تعداد کاربران
+@bot.callback_query_handler(func=lambda call: call.data == "user_count")
+def user_count(call):
+    try:
+        if call.from_user.id == ADMIN_ID:
+            count = users_collection.count_documents({})
+            bot.send_message(call.message.chat.id, f"تعداد کاربران: {count}")
+        else:
+            bot.answer_callback_query(call.id, "❌ دسترسی غیرمجاز!")
+    except Exception as e:
+        logger.error(f"User count error: {e}")
+
+# هندلر ارسال پیام همگانی
+@bot.callback_query_handler(func=lambda call: call.data == "broadcast")
+def broadcast(call):
+    try:
+        if call.from_user.id == ADMIN_ID:
+            bot.send_message(ADMIN_ID, "لطفاً متن پیام همگانی را ارسال کنید:")
+            users_collection.update_one({"user_id": ADMIN_ID}, {"$set": {"broadcast_mode": True}}, upsert=True)
+        else:
+            bot.answer_callback_query(call.id, "❌ دسترسی غیرمجاز!")
+    except Exception as e:
+        logger.error(f"Broadcast error: {e}")
+
+# هندلر دریافت پیام همگانی
+@bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID and users_collection.find_one({"user_id": ADMIN_ID, "broadcast_mode": True}))
+def send_broadcast(message):
+    try:
+        users = users_collection.find()
+        for user in users:
+            try:
+                bot.send_message(user["user_id"], message.text)
+            except:
+                continue
+        users_collection.update_one({"user_id": ADMIN_ID}, {"$set": {"broadcast_mode": False}})
+        bot.send_message(ADMIN_ID, "پیام همگانی ارسال شد.")
+    except Exception as e:
+        logger.error(f"Send broadcast error: {e}")
+
+# هندلر پیام‌های متنی
+@bot.message_handler(content_types=["text"])
+def handle_text(message):
+    user_id = message.from_user.id
+    try:
+        if not check_channel_membership(user_id):
+            bot.send_message(message.chat.id, "لطفاً ابتدا در کانال ما عضو شوید:", reply_markup=join_keyboard())
+            return
+
+        # بررسی پشتیبانی
+        if users_collection.find_one({"user_id": user_id, "support_mode": True}):
+            bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
+            return
+
+        # بررسی اسپم
+        can_send, time_left = check_spam(user_id)
+        if not can_send:
+            seconds = int(time_left.total_seconds())
+            bot.send_message(message.chat.id, f"⛔ لطفاً {seconds} ثانیه صبر کنید (حداکثر ۴ پیام در ۲ دقیقه).")
+            return
+
+        # تشخیص لینک
+        text = message.text
+        instagram_pattern = r"(https?://(www\.)?instagram\.com/(p|reel|stories)/.+)"
+        spotify_pattern = r"(https?://open\.spotify\.com/track/.+)"
+        pinterest_pattern = r"(https?://(www\.)?pinterest\.com/pin/.+)"
+
+        if re.match(instagram_pattern, text):
+            msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
+            file_url, error = download_file(text, "instagram")
+            bot.delete_message(message.chat.id, msg.message_id)
+            if error:
+                bot.send_message(message.chat.id, error)
+            else:
+                bot.send_document(message.chat.id, file_url)
+        elif re.match(spotify_pattern, text):
+            msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
+            file_url, error = download_file(text, "spotify")
+            bot.delete_message(message.chat.id, msg.message_id)
+            if error:
+                bot.send_message(message.chat.id, error)
+            else:
+                bot.send_audio(message.chat.id, file_url)
+        elif re.match(pinterest_pattern, text):
+            msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
+            file_url, error = download_file(text, "pinterest")
+            bot.delete_message(message.chat.id, msg.message_id)
+            if error:
+                bot.send_message(message.chat.id, error)
+            else:
+                bot.send_photo(message.chat.id, file_url)
+        else:
+            msg = bot.send_message(message.chat.id, "…")
+            response = get_chat_response(text)
+            bot.edit_message_text(response, message.chat.id, msg.message_id)
+    except Exception as e:
+        logger.error(f"Text handler error: {e}")
+        bot.send_message(message.chat.id, "❌ خطا در پردازش درخواست. لطفاً دوباره امتحان کنید.")
+
+# روت اصلی برای تست
+@application.route("/", methods=["GET"])
+def index():
+    return "Webhook is running!", 200
+
+# روت Flask برای وب‌هوک
+@application.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    try:
+        update = telebot.types.Update.de_json(request.get_json())
+        bot.process_new_updates([update])
+        return "", 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return "", 500
+
+# تنظیم وب‌هوک
+def set_webhook():
+    try:
+        bot.remove_webhook()
+        if bot.set_webhook(url=WEBHOOK_URL):
+            logger.info("Webhook set successfully")
+        else:
+            logger.error("Failed to set webhook")
+    except Exception as e:
+        logger.error(f"Error setting webhook: {e}")
+
+# اجرای وب‌هوک
+if __name__ == "__main__":
+    set_webhook()
+    application.run(host="0.0.0.0", port=1000)
