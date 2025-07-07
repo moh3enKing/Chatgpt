@@ -1,401 +1,258 @@
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from flask import Flask, request
-import requests
-import certifi
+import os
+import re
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes,
+)
 from pymongo import MongoClient
 from datetime import datetime, timedelta
-import re
-import os
 import logging
 
 # تنظیمات لاگ
-logging.basicConfig(level=logging.INFO, filename='bot.log', filemode='a', format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# تنظیمات ربات
-TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
+# تنظیمات بات
+TOKEN = "7881643365:AAEkvX2FvEBHHKvCLVLwBNiXXIidwNGwAzE"
 ADMIN_ID = 5637609683
-CHANNEL_ID = "@netgoris"
-MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=false&tls=true"
-WEBHOOK_URL = f"https://chatgpt-qg71.onrender.com/{TOKEN}"
+WEBHOOK_URL = "https://chatgpt-qg71.onrender.com/webhook"
+PORT = 10000
+MONGO_URI = "mongodb+srv://mohsenfeizi1386:p%40ssw0rd%279%27%21@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+DB_NAME = "chatroom"
+COLLECTION_USERS = "users"
 
-# وب‌سرویس‌ها
-CHAT_APIS = [
-    "https://starsshoptl.ir/Ai/index.php?text={}",
-    "https://starsshoptl.ir/Ai/index.php?model=gpt&text={}",
-    "https://starsshoptl.ir/Ai/index.php?model=deepseek&text={}"
-]
-INSTAGRAM_API = "https://pouriam.top/eyephp/instagram?url={}"
-SPOTIFY_API = "http://api.cactus-dev.ir/spotify.php?url={}"
-PINTEREST_API = "https://haji.s2025h.space/pin/?url={}&client_key=keyvip"
-IMAGE_API = "https://v3.api-free.ir/image/?text={}"
+# متن قوانین
+RULES_TEXT = """
+سلام کاربر @{username}
+به ربات Chat Room خوش آمدید!
+
+اینجا شما آزاد هستید که به‌صورت ناشناس با دیگر اعضای گروه در ارتباط باشید، چت کنید و با هم آشنا شوید.
+
+اما قوانینی وجود دارد که باید رعایت کنید تا از ربات مسدود نشوید:
+
+1. این ربات صرفاً برای سرگرمی، چت و دوست‌یابی طراحی شده است.
+   از ربات برای تبلیغات، درخواست پول یا موارد مشابه استفاده نکنید.
+2. ارسال گیف (GIF) به‌دلیل شلوغ نشدن ربات ممنوع است.
+   اما ارسال عکس، موسیقی و غیره آزاد است، به‌شرطی که محتوای غیراخلاقی نباشد.
+3. ربات دارای سیستم ضداسپم است. از اسپم کردن ربات خودداری کنید، وگرنه برای 2 دقیقه محدود خواهید شد.
+4. به یکدیگر احترام بگذارید. در صورت مشاهده فحاشی یا محتوای غیراخلاقی، با ریپلای روی پیام و ارسال دستور /report به ادمین اطلاع دهید.
+
+ربات در نسخه اولیه است و به‌روزرسانی‌های جدید در راه است.
+دوستان خود را به ربات دعوت کنید تا تجربه بهتری در چت کردن داشته باشید.
+موفق باشید!
+"""
 
 # اتصال به MongoDB
-try:
-    client = MongoClient(
-        MONGO_URI,
-        serverSelectionTimeoutMS=30000,
-        ssl=True
+client = MongoClient(MONGO_URI)
+db = client[DB_NAME]
+users_collection = db[COLLECTION_USERS]
+
+# بررسی فونت گرافیکی
+def is_graphical_text(text):
+    graphical_pattern = re.compile(r'[^\u0600-\u06FFa-zA-Z0-9\s!@#$%^&*(),.?":{}|<>]')
+    return bool(graphical_pattern.search(text))
+
+# بررسی اسپم
+async def check_spam(user_id, context):
+    now = datetime.now()
+    user_data = context.user_data.get("messages", [])
+    user_data.append(now)
+    user_data = [t for t in user_data if now - t < timedelta(seconds=5)]
+    context.user_data["messages"] = user_data
+    if len(user_data) > 5:
+        context.user_data["spam_block_until"] = now + timedelta(minutes=2)
+        return True
+    return False
+
+# شروع ربات
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data = users_collection.find_one({"user_id": user_id})
+
+    if user_data and user_data.get("banned"):
+        await update.message.reply_text("شما از ربات مسدود شده‌اید.")
+        return
+
+    if not user_data:
+        keyboard = [[InlineKeyboardButton("تأیید", callback_data="confirm_start")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "لطفاً به @netgoris پیام دهید تا ادامه دهید.",
+            reply_markup=ForceReply(selective=True),
+        )
+
+# مدیریت پاسخ اجباری
+async def handle_force_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if update.message.reply_to_message and "@netgoris" in update.message.reply_to_message.text:
+        keyboard = [[InlineKeyboardButton("قوانین", callback_data="show_rules")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.delete()
+        await update.message.reply_text(
+            "قوانین و مقررات را تأیید می‌کنید؟", reply_markup=reply_markup
+        )
+
+# نمایش قوانین
+async def show_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    username = users_collection.find_one({"user_id": user_id}, {"username": 1}) or {}
+    username = username.get("username", query.from_user.username or "کاربر")
+    await query.message.edit_text(RULES_TEXT.format(username=username))
+    await query.message.reply_text("لطفاً نام خود را برای استفاده در چت ارسال کنید.")
+
+# ثبت نام کاربر
+async def set_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.message.text.strip()
+
+    if users_collection.find_one({"user_id": user_id, "username": {"$exists": True}}):
+        await update.message.reply_text("شما قبلاً نام خود را انتخاب کرده‌اید.")
+        return
+
+    if is_graphical_text(username):
+        await update.message.reply_text("لطفاً از فونت‌های ساده استفاده کنید (بدون فونت گرافیکی).")
+        return
+
+    if users_collection.find_one({"username": username}):
+        await update.message.reply_text("این نام قبلاً انتخاب شده است. لطفاً نام دیگری انتخاب کنید.")
+        return
+
+    users_collection.update_one(
+        {"user_id": user_id}, {"$set": {"username": username, "banned": False}}, upsert=True
     )
-    db = client["telegram_bot"]
-    users_collection = db["users"]
-    spam_collection = db["spam"]
-    client.server_info()  # تست اتصال
-    logger.info("MongoDB connection successful")
-except Exception as e:
-    logger.error(f"MongoDB connection error: {str(e)}")
-    raise  # برای تست، خطا رو پرت می‌کنه
+    await update.message.reply_text(f"نام شما با موفقیت به {username} تنظیم شد. حالا می‌توانید چت کنید!")
 
-# تنظیم ربات و Flask
-bot = telebot.TeleBot(TOKEN)
-application = Flask(__name__)
+# مدیریت پیام‌های چت
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data = users_collection.find_one({"user_id": user_id})
 
-# تابع بررسی عضویت در کانال
-def check_channel_membership(user_id):
-    try:
-        member = bot.get_chat_member(CHANNEL_ID, user_id)
-        return member.status in ["member", "administrator", "creator"]
-    except Exception as e:
-        logger.error(f"Error checking membership for user {user_id}: {str(e)}")
-        return False
+    if not user_data or not user_data.get("username"):
+        await update.message.reply_text("لطفاً ابتدا نام خود را تنظیم کنید.")
+        return
 
-# تابع ایجاد کیبورد جوین
-def join_keyboard():
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("📢 کانال", url=f"https://t.me/{CHANNEL_ID[1:]}"))
-    keyboard.add(InlineKeyboardButton("✅ تأیید", callback_data="check_join"))
-    return keyboard
+    if user_data.get("banned"):
+        await update.message.reply_text("شما از ربات مسدود شده‌اید.")
+        return
 
-# تابع ایجاد کیبورد اصلی
-def main_keyboard():
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add("📖 راهنما", "📞 پشتیبانی")
-    return keyboard
+    if context.user_data.get("spam_block_until") and datetime.now() < context.user_data["spam_block_until"]:
+        await update.message.reply_text("شما به دلیل اسپم برای 2 دقیقه محدود شده‌اید.")
+        return
 
-# تابع ایجاد کیبورد ادمین
-def admin_keyboard():
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("👥 تعداد کاربران", callback_data="user_count"))
-    keyboard.add(InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="broadcast"))
-    return keyboard
+    if await check_spam(user_id, context):
+        await update.message.reply_text("شما به دلیل اسپم برای 2 دقیقه محدود شده‌اید.")
+        return
 
-# تابع بررسی اسپم
-def check_spam(user_id):
-    try:
-        now = datetime.now()
-        user_spam = spam_collection.find_one({"user_id": user_id})
-        if user_spam:
-            messages = user_spam.get("messages", [])
-            messages = [msg for msg in messages if now - msg["time"] < timedelta(minutes=2)]
-            if len(messages) >= 4:
-                return False, now - messages[-1]["time"]
-            messages.append({"time": now})
-            spam_collection.update_one({"user_id": user_id}, {"$set": {"messages": messages}}, upsert=True)
-        else:
-            spam_collection.insert_one({"user_id": user_id, "messages": [{"time": now}]})
-        return True, None
-    except Exception as e:
-        logger.error(f"Spam check error for user {user_id}: {str(e)}")
-        return False, None
+    if update.message.animation:
+        await update.message.reply_text("ارسال گیف ممنوع است!")
+        return
 
-# تابع دریافت پاسخ از وب‌سرویس چت
-def get_chat_response(text):
-    for api in CHAT_APIS:
-        try:
-            response = requests.get(api.format(text), timeout=5)
-            if response.status_code == 200:
-                return response.text.strip()
-        except Exception as e:
-            logger.error(f"Chat API error for text {text}: {str(e)}")
-            continue
-    return "❌ خطا در اتصال به سرور چت"
-
-# تابع دانلود فایل
-def download_file(url, service):
-    try:
-        if service == "instagram":
-            response = requests.get(INSTAGRAM_API.format(url), timeout=10)
-            data = response.json()
-            if "links" in data:
-                return data["links"][0], None
-            return None, "❌ خطا: لینک اینستاگرام معتبر نیست"
-        elif service == "spotify":
-            response = requests.get(SPOTIFY_API.format(url), timeout=10)
-            data = response.json()
-            if data.get("ok") and "download_url" in data["data"]["track"]:
-                return data["data"]["track"]["download_url"], None
-            return None, "❌ خطا: لینک اسپاتیفای معتبر نیست"
-        elif service == "pinterest":
-            response = requests.get(PINTEREST_API.format(url), timeout=10)
-            data = response.json()
-            if data.get("status"):
-                return data["download_url"], None
-            return None, "❌ خطا: لینک پینترست معتبر نیست"
-        elif service == "image":
-            response = requests.get(IMAGE_API.format(url), timeout=10)
-            data = response.json()
-            if data.get("ok"):
-                return data["result"], None
-            return None, "❌ خطا: متن برای تولید تصویر معتبر نیست"
-    except Exception as e:
-        return None, f"❌ خطا در اتصال به سرور: {str(e)}"
-
-# هندلر استارت
-@bot.message_handler(commands=["start"])
-def start(message):
-    user_id = message.from_user.id
-    try:
-        # بررسی اتصال به MongoDB
-        if not client.server_info():
-            logger.error("MongoDB not connected during start command")
-            bot.send_message(message.chat.id, "❌ خطا در اتصال به دیتابیس. لطفاً بعداً امتحان کنید.")
-            return
-
-        # ثبت کاربر جدید
-        if not users_collection.find_one({"user_id": user_id}):
-            users_collection.insert_one({"user_id": user_id, "first_start": datetime.now()})
+    username = "ادمین" if user_id == ADMIN_ID else user_data["username"]
+    message_text = f"{username}: {update.message.text}"
+    for user in users_collection.find({"banned": False}):
+        if user["user_id"] != user_id:
             try:
-                bot.send_message(ADMIN_ID, f"کاربر جدید: {message.from_user.username or message.from_user.first_name} ({user_id})")
-            except Exception as e:
-                logger.error(f"Error sending new user notification to admin {ADMIN_ID}: {str(e)}")
-
-        # بررسی عضویت در کانال
-        if not check_channel_membership(user_id):
-            bot.send_message(message.chat.id, "لطفاً ابتدا در کانال ما عضو شوید:", reply_markup=join_keyboard())
-        else:
-            welcome_msg = (
-                "🎉 خوش آمدید!\n"
-                "تبریک! شما با موفقیت به ربات ما پیوستید. از امکانات هوش مصنوعی و دانلودرهای ما لذت ببرید! 😊\n"
-                "برای اطلاعات بیشتر، دکمه راهنما را بزنید."
-            )
-            bot.send_message(message.chat.id, welcome_msg, reply_markup=main_keyboard())
-    except Exception as e:
-        logger.error(f"Start handler error for user {user_id}: {str(e)}")
-        bot.send_message(message.chat.id, "❌ خطا در پردازش درخواست. لطفاً دوباره امتحان کنید.")
-
-# هندلر بررسی جوین
-@bot.callback_query_handler(func=lambda call: call.data == "check_join")
-def check_join(call):
-    user_id = call.from_user.id
-    try:
-        if check_channel_membership(user_id):
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-            welcome_msg = (
-                "🎉 خوش آمدید!\n"
-                "تبریک! شما با موفقیت به ربات ما پیوستید. از امکانات هوش مصنوعی و دانلودرهای ما لذت ببرید! 😊\n"
-                "برای اطلاعات بیشتر، دکمه راهنما را بزنید."
-            )
-            bot.send_message(call.message.chat.id, welcome_msg, reply_markup=main_keyboard())
-        else:
-            bot.answer_callback_query(call.id, "❌ لطفاً ابتدا در کانال عضو شوید!")
-    except Exception as e:
-        logger.error(f"Check join error for user {user_id}: {str(e)}")
-        bot.answer_callback_query(call.id, "❌ خطا در پردازش درخواست.")
-
-# هندلر راهنما
-@bot.message_handler(func=lambda message: message.text == "📖 راهنما")
-def guide(message):
-    guide_text = (
-        "📚 **راهنمای استفاده از ربات**\n\n"
-        "این ربات امکانات زیر را ارائه می‌دهد:\n"
-        "🤖 **چت هوش مصنوعی**: هر متنی بنویسید، پاسخ هوشمند دریافت کنید.\n"
-        "📥 **دانلودرها**:\n"
-        "- اینستاگرام: لینک پست/استوری/ریلز (عکس یا ویدیو)\n"
-        "- اسپاتیفای: لینک آهنگ (فایل MP3)\n"
-        "- پینترست: لینک پین (عکس)\n"
-        "- تولید تصویر: متن وارد کنید، تصویر دریافت کنید.\n\n"
-        "⚠️ **قوانین و اخطارها**:\n"
-        "1. از ارسال لینک‌های غیرمجاز (به جز اینستاگرام، اسپاتیفای، پینترست) خودداری کنید.\n"
-        "2. ارسال بیش از ۴ پیام در ۲ دقیقه باعث مسدود شدن موقت می‌شود.\n"
-        "3. از ارسال محتوای غیرقانونی یا توهین‌آمیز پرهیز کنید.\n\n"
-        "📞 برای پشتیبانی، دکمه پشتیبانی را بزنید."
-    )
-    try:
-        bot.edit_message_text(guide_text, message.chat.id, message.message_id, reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🙏 ما همیشه در خدمتیم", callback_data="final_message")))
-    except:
-        bot.send_message(message.chat.id, guide_text, reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🙏 ما همیشه در خدمتیم", callback_data="final_message")))
-
-# هندلر پیام نهایی
-@bot.callback_query_handler(func=lambda call: call.data == "final_message")
-def final_message(call):
-    final_text = (
-        "🙏 **ما همیشه در خدمت شما هستیم!**\n"
-        "از همراهی شما سپاسگزاریم. هر زمان نیاز به کمک داشتید، با پشتیبانی تماس بگیرید! 😊"
-    )
-    try:
-        bot.edit_message_text(final_text, call.message.chat.id, call.message.message_id, reply_markup=main_keyboard())
-    except Exception as e:
-        logger.error(f"Final message error for user {call.from_user.id}: {str(e)}")
-
-# هندلر پشتیبانی
-@bot.message_handler(func=lambda message: message.text == "📞 پشتیبانی")
-def support(message):
-    try:
-        users_collection.update_one({"user_id": message.from_user.id}, {"$set": {"support_mode": True}}, upsert=True)
-        bot.send_message(message.chat.id, "لطفاً پیام خود را برای پشتیبانی ارسال کنید یا برای خروج /cancel را بزنید.", reply_markup=ReplyKeyboardRemove())
-    except Exception as e:
-        logger.error(f"Support handler error for user {message.from_user.id}: {str(e)}")
-
-# هندلر لغو پشتیبانی
-@bot.message_handler(commands=["cancel"])
-def cancel_support(message):
-    try:
-        users_collection.update_one({"user_id": message.from_user.id}, {"$set": {"support_mode": False}})
-        bot.send_message(message.chat.id, "پشتیبانی لغو شد.", reply_markup=main_keyboard())
-    except Exception as e:
-        logger.error(f"Cancel support error for user {message.from_user.id}: {str(e)}")
-
-# هندلر پاسخ ادمین
-@bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID and message.reply_to_message)
-def admin_reply(message):
-    try:
-        user_id = message.reply_to_message.forward_from.id if message.reply_to_message.forward_from else None
-        if user_id:
-            bot.send_message(user_id, message.text, reply_to_message_id=message.reply_to_message.message_id)
-            users_collection.update_one({"user_id": user_id}, {"$set": {"support_mode": False}})
-            bot.send_message(user_id, "پشتیبانی به پایان رسید.", reply_markup=main_keyboard())
-            bot.send_message(ADMIN_ID, "پاسخ برای کاربر ارسال شد.")
-    except Exception as e:
-        logger.error(f"Admin reply error for user {user_id}: {str(e)}")
-
-# هندلر پنل ادمین
-@bot.message_handler(commands=["admin"])
-def admin_panel(message):
-    try:
-        if message.from_user.id == ADMIN_ID:
-            bot.send_message(message.chat.id, "پنل مدیریت:", reply_markup=admin_keyboard())
-        else:
-            bot.send_message(message.chat.id, "❌ دسترسی غیرمجاز!")
-    except Exception as e:
-        logger.error(f"Admin panel error for user {message.from_user.id}: {str(e)}")
-
-# هندلر تعداد کاربران
-@bot.callback_query_handler(func=lambda call: call.data == "user_count")
-def user_count(call):
-    try:
-        if call.from_user.id == ADMIN_ID:
-            count = users_collection.count_documents({})
-            bot.send_message(call.message.chat.id, f"تعداد کاربران: {count}")
-        else:
-            bot.answer_callback_query(call.id, "❌ دسترسی غیرمجاز!")
-    except Exception as e:
-        logger.error(f"User count error for user {call.from_user.id}: {str(e)}")
-
-# هندلر ارسال پیام همگانی
-@bot.callback_query_handler(func=lambda call: call.data == "broadcast")
-def broadcast(call):
-    try:
-        if call.from_user.id == ADMIN_ID:
-            bot.send_message(ADMIN_ID, "لطفاً متن پیام همگانی را ارسال کنید:")
-            users_collection.update_one({"user_id": ADMIN_ID}, {"$set": {"broadcast_mode": True}}, upsert=True)
-        else:
-            bot.answer_callback_query(call.id, "❌ دسترسی غیرمجاز!")
-    except Exception as e:
-        logger.error(f"Broadcast error for user {call.from_user.id}: {str(e)}")
-
-# هندلر دریافت پیام همگانی
-@bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID and users_collection.find_one({"user_id": ADMIN_ID, "broadcast_mode": True}))
-def send_broadcast(message):
-    try:
-        users = users_collection.find()
-        for user in users:
-            try:
-                bot.send_message(user["user_id"], message.text)
+                await context.bot.send_message(user["user_id"], message_text)
             except:
-                continue
-        users_collection.update_one({"user_id": ADMIN_ID}, {"$set": {"broadcast_mode": False}})
-        bot.send_message(ADMIN_ID, "پیام همگانی ارسال شد.")
-    except Exception as e:
-        logger.error(f"Send broadcast error for admin {ADMIN_ID}: {str(e)}")
+                pass
 
-# هندلر پیام‌های متنی
-@bot.message_handler(content_types=["text"])
-def handle_text(message):
-    user_id = message.from_user.id
-    try:
-        if not check_channel_membership(user_id):
-            bot.send_message(message.chat.id, "لطفاً ابتدا در کانال ما عضو شوید:", reply_markup=join_keyboard())
-            return
+# گزارش تخلف
+async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("لطفاً روی پیام موردنظر ریپلای کنید.")
+        return
 
-        # بررسی پشتیبانی
-        if users_collection.find_one({"user_id": user_id, "support_mode": True}):
-            bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
-            return
+    reported_message = update.message.reply_to_message.text
+    reported_user_id = update.message.reply_to_message.from_user.id
+    reported_user = users_collection.find_one({"user_id": reported_user_id})
+    reported_username = reported_user.get("username", "ناشناس") if reported_user else "ناشناس"
+    await context.bot.send_message(
+        ADMIN_ID, f"گزارش تخلف از کاربر {reported_username}:\n{reported_message}"
+    )
+    await update.message.reply_text("گزارش شما به ادمین ارسال شد.")
 
-        # بررسی اسپم
-        can_send, time_left = check_spam(user_id)
-        if not can_send:
-            seconds = int(time_left.total_seconds())
-            bot.send_message(message.chat.id, f"⛔ لطفاً {seconds} ثانیه صبر کنید (حداکثر ۴ پیام در ۲ دقیقه).")
-            return
+# بن کردن کاربر
+async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("فقط ادمین می‌تواند از این دستور استفاده کند.")
+        return
 
-        # تشخیص لینک
-        text = message.text
-        instagram_pattern = r"(https?://(www\.)?instagram\.com/(p|reel|stories)/.+)"
-        spotify_pattern = r"(https?://open\.spotify\.com/track/.+)"
-        pinterest_pattern = r"(https?://(www\.)?pinterest\.com/pin/.+)"
+    if not update.message.reply_to_message:
+        await update.message.reply_text("لطفاً روی پیام کاربر موردنظر ریپلای کنید.")
+        return
 
-        if re.match(instagram_pattern, text):
-            msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
-            file_url, error = download_file(text, "instagram")
-            bot.delete_message(message.chat.id, msg.message_id)
-            if error:
-                bot.send_message(message.chat.id, error)
-            else:
-                bot.send_document(message.chat.id, file_url)
-        elif re.match(spotify_pattern, text):
-            msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
-            file_url, error = download_file(text, "spotify")
-            bot.delete_message(message.chat.id, msg.message_id)
-            if error:
-                bot.send_message(message.chat.id, error)
-            else:
-                bot.send_audio(message.chat.id, file_url)
-        elif re.match(pinterest_pattern, text):
-            msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
-            file_url, error = download_file(text, "pinterest")
-            bot.delete_message(message.chat.id, msg.message_id)
-            if error:
-                bot.send_message(message.chat.id, error)
-            else:
-                bot.send_photo(message.chat.id, file_url)
-        else:
-            msg = bot.send_message(message.chat.id, "…")
-            response = get_chat_response(text)
-            bot.edit_message_text(response, message.chat.id, msg.message_id)
-    except Exception as e:
-        logger.error(f"Text handler error for user {user_id}: {str(e)}")
-        bot.send_message(message.chat.id, "❌ خطا در پردازش درخواست. لطفاً دوباره امتحان کنید.")
+    target_user_id = update.message.reply_to_message.from_user.id
+    users_collection.update_one({"user_id": target_user_id}, {"$set": {"banned": True}})
+    await update.message.reply_text("کاربر مسدود شد.")
 
-# روت اصلی برای تست
-@application.route("/", methods=["GET"])
-def index():
-    return "Webhook is running!", 200
+# رفع بن
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("فقط ادمین می‌تواند از این دستور استفاده کند.")
+        return
 
-# روت Flask برای وب‌هوک
-@application.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    try:
-        update = telebot.types.Update.de_json(request.get_json())
-        bot.process_new_updates([update])
-        return "", 200
-    except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        return "", 500
+    if not update.message.reply_to_message:
+        await update.message.reply_text("لطفاً روی پیام کاربر موردنظر ریپلای کنید.")
+        return
 
-# تنظیم وب‌هوک
-def set_webhook():
-    try:
-        bot.remove_webhook()
-        if bot.set_webhook(url=WEBHOOK_URL):
-            logger.info("Webhook set successfully")
-        else:
-            logger.error("Failed to set webhook")
-    except Exception as e:
-        logger.error(f"Error setting webhook: {str(e)}")
+    target_user_id = update.message.reply_to_message.from_user.id
+    users_collection.update_one({"user_id": target_user_id}, {"$set": {"banned": False}})
+    await update.message.reply_text("کاربر رفع مسدودی شد.")
 
-# اجرای وب‌هوک
+# روشن/خاموش کردن ربات
+async def toggle_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("فقط ادمین می‌تواند از این دستور استفاده کند.")
+        return
+
+    bot_status = context.bot_data.get("bot_enabled", True)
+    context.bot_data["bot_enabled"] = not bot_status
+    status_text = "فعال" if context.bot_data["bot_enabled"] else "غیرفعال"
+    await update.message.reply_text(f"ربات {status_text} شد.")
+
+# مدیریت callbackها
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "confirm_start":
+        await handle_force_reply(update, context)
+    elif query.data == "show_rules":
+        await show_rules(update, context)
+
+# خطاها
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}")
+
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.REPLY, handle_force_reply))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, set_username))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("ban", ban))
+    app.add_handler(CommandHandler("unban", unban))
+    app.add_handler(CommandHandler("toggle", toggle_bot))
+    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_error_handler(error_handler)
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="/webhook",
+        webhook_url=WEBHOOK_URL,
+    )
+
 if __name__ == "__main__":
-    set_webhook()
-    application.run(host="0.0.0.0", port=1000)
+    main()
