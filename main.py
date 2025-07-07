@@ -1,30 +1,43 @@
+from flask import Flask, request
 import telebot
 from telebot import types
-from flask import Flask, request
-import re
 from pymongo import MongoClient
-import os
+import re
 
-# ====== تنظیمات ======
+# تنظیمات
 BOT_TOKEN = "7881643365:AAEkvX2FvEBHHKvCLVLwBNiXXIidwNGwAzE"
-OWNER_ID = 5637609683
 FORCE_JOIN_CHANNEL = "@netgoris"
+MONGO_URI = "mongodb+srv://mohsenfeizi1386:p%40s sw0 rd%279%27%21@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority"
 WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
+OWNER_ID = 5637609683
 PORT = 100
-MONGO_URI = "mongodb+srv://mohsenfeizi1386:p%40s sw0 rd%279%27%21@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
-bot = telebot.TeleBot(BOT_TOKEN)
+# راه‌اندازی
 app = Flask(__name__)
+bot = telebot.TeleBot(BOT_TOKEN)
 client = MongoClient(MONGO_URI)
 db = client["chatroom_bot"]
 
-# ====== توابع کمکی ======
+# توابع کمکی
+def has_joined(user_id):
+    try:
+        status = bot.get_chat_member(chat_id=FORCE_JOIN_CHANNEL, user_id=user_id).status
+        return status in ['member', 'administrator', 'creator']
+    except:
+        return False
 
-def is_english_name(text):
+def is_english(text):
     return bool(re.fullmatch(r'[A-Za-z0-9\s]+', text.strip()))
 
+def is_name_valid(name):
+    if not is_english(name):
+        return False
+    if "admin" in name.lower():
+        return False
+    return True
+
 def is_name_taken(name):
-    return db.users.find_one({"display_name": name}) is not None
+    return db.users.find_one({"display_name": name.lower()}) is not None
 
 def save_user(user_id, username, name):
     db.users.insert_one({
@@ -33,164 +46,199 @@ def save_user(user_id, username, name):
         "display_name": name
     })
 
-def has_joined(user_id):
-    try:
-        status = bot.get_chat_member(chat_id=FORCE_JOIN_CHANNEL, user_id=user_id).status
-        return status in ['member', 'administrator', 'creator']
-    except:
-        return False
-
-# ====== هندلر استارت ======
-
+# استارت و چک عضویت
 @bot.message_handler(commands=['start'])
 def start_handler(message):
-    if not has_joined(message.from_user.id):
-        join_msg = f"🌟 برای استفاده از ربات، ابتدا عضو کانال شوید: {FORCE_JOIN_CHANNEL}"
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{FORCE_JOIN_CHANNEL[1:]}"))
-        bot.send_message(message.chat.id, join_msg, reply_markup=markup)
+    uid = message.from_user.id
+
+    if db.users.find_one({"user_id": uid}):
+        bot.send_message(message.chat.id, "✅ شما قبلاً ثبت‌نام کردید.")
         return
 
-    rules_button = types.InlineKeyboardMarkup()
-    rules_button.add(types.InlineKeyboardButton("📜 قوانین", callback_data="show_rules"))
-    bot.send_message(message.chat.id, "✅ لطفاً قوانین را مطالعه نمایید:", reply_markup=rules_button)
+    if not has_joined(uid):
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{FORCE_JOIN_CHANNEL[1:]}"),
+            types.InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join")
+        )
+        bot.send_message(message.chat.id, f"👋 برای ادامه، عضو کانال {FORCE_JOIN_CHANNEL} شوید:", reply_markup=markup)
+    else:
+        show_rules_button(message.chat.id)
 
-# ====== هندلر قوانین ======
+@bot.callback_query_handler(func=lambda call: call.data == "check_join")
+def recheck_join(call):
+    if has_joined(call.from_user.id):
+        bot.edit_message_text("✅ عضویت تایید شد. لطفاً قوانین را مطالعه کنید:", call.message.chat.id, call.message.message_id)
+        show_rules_button(call.message.chat.id)
+    else:
+        bot.answer_callback_query(call.id, "❌ هنوز عضو کانال نیستی!")
 
-@bot.callback_query_handler(func=lambda c: c.data == "show_rules")
+def show_rules_button(chat_id):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📜 قوانین", callback_data="show_rules"))
+    bot.send_message(chat_id, "لطفاً قوانین زیر را مطالعه کن:", reply_markup=markup)
+
+# قوانین
+@bot.callback_query_handler(func=lambda call: call.data == "show_rules")
 def show_rules(call):
     rules = f"""
 سلام کاربر @{call.from_user.username or 'دوست عزیز'}  
 به ربات Chat Room خوش اومدی 🌟
 
-اینجا آزادی که به‌صورت ناشناس با سایر اعضا چت کنی.  
-اما قوانینی هست که باید رعایت کنی:
+اینجا آزادی که ناشناس چت کنی، اما این قوانین رو رعایت کن:
 
-1» فقط برای چت و آشناییه. تبلیغ یا درخواست پول ممنوعه.  
-2» ارسال گیف ممنوع؛ عکس و موسیقی آزاد با محتوای سالم.  
-3» اسپم = سکوت ۲ دقیقه‌ای  
-4» احترام؛ توهین = گزارش با دستور (گزارش)
+1» استفاده فقط برای سرگرمی و آشنایی. تبلیغات ممنوع.  
+2» گیف ممنوع. عکس و موسیقی سالم مجازه.  
+3» اسپم = سکوت ۲ دقیقه  
+4» محترمانه باش. تخلف = گزارش با (گزارش)
 
-🚨 آپدیت‌های جدید در راهه، دوستانتو دعوت کن!
+⛑ ربات در نسخه اولیه‌ست. دوستاتو دعوت کن!
 """
-    confirm = types.InlineKeyboardMarkup()
-    confirm.add(types.InlineKeyboardButton("✅ تایید قوانین", callback_data="accept_rules"))
-    bot.edit_message_text(rules, call.message.chat.id, call.message.message_id, reply_markup=confirm)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("✅ تایید قوانین", callback_data="accept_rules"))
+    bot.edit_message_text(rules, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-# ====== تایید قوانین ======
+# تایید قوانین و دریافت اسم
+@bot.callback_query_handler(func=lambda call: call.data == "accept_rules")
+def ask_name(call):
+    bot.send_message(call.message.chat.id, "📝 لطفاً یک نام فقط انگلیسی وارد کن (نباید شامل admin باشه):")
+    bot.register_next_step_handler(call.message, save_name_step)
 
-@bot.callback_query_handler(func=lambda c: c.data == "accept_rules")
-def accept_rules(call):
-    bot.send_message(call.message.chat.id, "✅ قوانین تایید شد. لطفاً یک نام نمایشی **فقط به انگلیسی** ارسال کنید:")
-    bot.register_next_step_handler(call.message, name_step)
-
-def name_step(msg):
+def save_name_step(msg):
     name = msg.text.strip()
-    if not is_english_name(name):
-        bot.send_message(msg.chat.id, "❌ فقط از حروف انگلیسی استفاده کن. دوباره امتحان کن:")
-        bot.register_next_step_handler(msg, name_step)
+
+    if not is_name_valid(name):
+        bot.send_message(msg.chat.id, "❌ فقط حروف انگلیسی مجازه و کلمه 'admin' نباید در نام باشه. دوباره امتحان کن:")
+        bot.register_next_step_handler(msg, save_name_step)
         return
 
     if is_name_taken(name):
-        bot.send_message(msg.chat.id, "❌ این نام قبلاً انتخاب شده. لطفاً نام متفاوتی وارد کن:")
-        bot.register_next_step_handler(msg, name_step)
+        bot.send_message(msg.chat.id, "❌ این نام قبلاً ثبت شده. لطفاً نام دیگری وارد کن:")
+        bot.register_next_step_handler(msg, save_name_step)
         return
 
     save_user(msg.from_user.id, msg.from_user.username, name)
-    bot.send_message(msg.chat.id, f"✅ ثبت شد! از این به بعد پیامهات با نام `{name}` در چت ظاهر می‌شه.")
+    bot.send_message(msg.chat.id, f"✅ نام {name} با موفقیت ثبت شد. خوش اومدی!")
 
-from collections import defaultdict
+
 import time
+from collections import defaultdict
 
+# وضعیت کلی ربات
+bot_enabled = True
+banned_ids = set()
 spam_tracker = defaultdict(list)
-mute_list = {}
+mute_until = {}
 
-@bot.message_handler(func=lambda m: True, content_types=['text', 'photo', 'audio', 'document', 'sticker', 'video'])
-def handle_messages(msg):
-    user_id = msg.from_user.id
+# نمایش پیام و نام کاربر
+@bot.message_handler(func=lambda m: True, content_types=['text', 'photo', 'audio', 'document', 'video', 'animation'])
+def handle_all(msg):
+    uid = msg.from_user.id
 
-    # چک سکوت
-    if user_id in mute_list and time.time() < mute_list[user_id]:
+    # بررسی فعال بودن ربات
+    if not bot_enabled or uid in banned_ids:
         return
 
-    # ضد اسپم
-    spam_tracker[user_id].append(time.time())
-    spam_tracker[user_id] = [t for t in spam_tracker[user_id] if time.time() - t < 1]
+    # ضداسپم بر اساس پیام در یک ثانیه
+    now = time.time()
+    spam_tracker[uid].append(now)
+    spam_tracker[uid] = [t for t in spam_tracker[uid] if now - t < 1]
 
-    if len(spam_tracker[user_id]) > 3:
-        mute_list[user_id] = time.time() + 120
-        bot.send_message(msg.chat.id, "⛔️ به دلیل اسپم، شما به مدت ۲ دقیقه در سکوت هستید.")
+    if len(spam_tracker[uid]) > 3:
+        mute_until[uid] = now + 120
+        bot.send_message(msg.chat.id, "⛔️ به دلیل ارسال بیش‌ازحد، ۲ دقیقه در سکوت هستی.")
         return
 
-    # جلوگیری از گیف
+    # سکوت موقت
+    if uid in mute_until and time.time() < mute_until[uid]:
+        return
+
+    # حذف گیف
     if msg.content_type == 'animation':
         bot.delete_message(msg.chat.id, msg.message_id)
         bot.send_message(msg.chat.id, "❌ ارسال گیف مجاز نیست.")
         return
 
-    # نمایش نام بالای پیام
-    user = db.users.find_one({"user_id": user_id})
-    name = user['display_name'] if user else "ناشناس"
-    try:
-        bot.send_message(msg.chat.id, f"🗣 {name}:\n{msg.text}" if msg.text else "پیام دریافت شد.")
-    except:
-        pass
+    # دریافت نام ثبت‌شده
+    user = db.users.find_one({"user_id": uid})
+    name = user["display_name"] if user else "ناشناس"
+
+    # ارسال پیام با نام کاربر
+    if msg.text:
+        reply_markup = None
+        bot.send_message(msg.chat.id, f"🗣 {name}:\n{msg.text}", reply_to_message_id=msg.message_id if msg.reply_to_message else None, reply_markup=reply_markup)
 
 @bot.message_handler(func=lambda m: m.reply_to_message and m.text.lower() == "گزارش")
-def report_message(msg):
-    if msg.reply_to_message:
-        try:
-            bot.forward_message(OWNER_ID, msg.chat.id, msg.reply_to_message.message_id)
-            bot.send_message(OWNER_ID, f"📢 گزارش جدید از @{msg.from_user.username or 'کاربر'}")
-            bot.send_message(msg.chat.id, "✅ پیام با موفقیت گزارش شد.")
-        except:
-            bot.send_message(msg.chat.id, "❌ خطا در ارسال گزارش.")
+def handle_report(msg):
+    try:
+        origin_msg = msg.reply_to_message
+        bot.forward_message(OWNER_ID, origin_msg.chat.id, origin_msg.message_id)
+        bot.send_message(OWNER_ID, f"📣 گزارش جدید از @{msg.from_user.username or 'کاربر ناشناس'}")
+        bot.send_message(msg.chat.id, "✅ پیام گزارش شد.")
+    except:
+        bot.send_message(msg.chat.id, "❌ خطا در ارسال گزارش.")
 
-bot_enabled = True
-banned_ids = set()
-
+# بن و آن‌بن با ریپلای
 @bot.message_handler(func=lambda m: m.from_user.id == OWNER_ID and m.reply_to_message)
-def admin_controls(msg):
+def admin_reply_commands(msg):
     target_id = msg.reply_to_message.from_user.id
-    text = msg.text.lower()
+    cmd = msg.text.lower()
 
-    if text == "بن":
+    if cmd == "بن":
         banned_ids.add(target_id)
         db.banned_users.insert_one({"user_id": target_id})
-        bot.send_message(msg.chat.id, "🚫 کاربر بن شد.")
-    elif text == "آنبن":
+        bot.send_message(msg.chat.id, f"🚫 کاربر {target_id} بن شد.")
+    elif cmd == "آنبن":
         banned_ids.discard(target_id)
         db.banned_users.delete_one({"user_id": target_id})
-        bot.send_message(msg.chat.id, "✅ کاربر آزاد شد.")
+        bot.send_message(msg.chat.id, f"✅ کاربر {target_id} آزاد شد.")
 
-@bot.message_handler(commands=['off', 'on'])
+# روشن و خاموش کردن ربات
+@bot.message_handler(commands=['on', 'off'])
 def toggle_bot(msg):
     global bot_enabled
     if msg.from_user.id != OWNER_ID:
         return
-    bot_enabled = msg.text == "/on"
-    bot.send_message(msg.chat.id, f"✅ وضعیت ربات: {'فعال' if bot_enabled else 'غیرفعال'}")
 
-# هندلر محدودیت استفاده از ربات
-@bot.message_handler(func=lambda m: True)
-def gate_check(msg):
-    if not bot_enabled:
-        return
-    if msg.from_user.id in banned_ids:
-        return
-    # ادامه پردازش...
-# ====== webhook ======
+    if msg.text == '/on':
+        bot_enabled = True
+        bot.send_message(msg.chat.id, "✅ ربات فعال شد.")
+    elif msg.text == '/off':
+        bot_enabled = False
+        bot.send_message(msg.chat.id, "🛑 ربات غیرفعال شد.")
 
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+# حافظه موقتی پیام‌ها
+stored_messages = {}
+
+@bot.message_handler(func=lambda m: True, content_types=['text'])
+def handle_messages_with_quotes(msg):
+    user = db.users.find_one({"user_id": msg.from_user.id})
+    name = user["display_name"] if user else "ناشناس"
+
+    # ذخیره پیام‌ها برای ریپلای بعدی
+    stored_messages[msg.message_id] = {
+        "text": msg.text,
+        "name": name
+    }
+
+    # اگه روی پیام دیگه‌ای ریپلای شده باشه
+    if msg.reply_to_message and msg.reply_to_message.message_id in stored_messages:
+        original = stored_messages[msg.reply_to_message.message_id]
+        quote = f"📨 پاسخ به {original['name']}:\n\"{original['text']}\"\n\n🗣 {name}:\n{msg.text}"
+        bot.send_message(msg.chat.id, quote)
+    else:
+        # پیام معمولی
+        bot.send_message(msg.chat.id, f"🗣 {name}:\n{msg.text}")
+        
+# وبهوک و اجرا
+@app.route(f'/{BOT_TOKEN}', methods=["POST"])
 def webhook():
     bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
-    return "ok", 200
+    return "ok"
 
 @app.route("/")
 def index():
-    return "ربات فعال است ✅"
-
-# ====== اجرا ======
+    return "ربات فعاله ✅"
 
 if __name__ == "__main__":
     bot.remove_webhook()
