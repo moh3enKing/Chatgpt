@@ -4,8 +4,8 @@ from pymongo import MongoClient
 import os
 
 # 🔧 مشخصات ربات
-API_ID = 2802662
-API_HASH = "b8a41227faa1766d1dc3122e4c04c794"
+API_ID = 2040
+API_HASH = "b18441a1ff607e10a989891a5462e627"
 BOT_TOKEN = "7881643365:AAEkvX2FvEBHHKvCLVLwBNiXXIidwNGwAzE"
 OWNER_ID = 5637609683  # آیدی عددی صاحب ربات
 
