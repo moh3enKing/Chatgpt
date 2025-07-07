@@ -1,634 +1,367 @@
-import os
-import re
-import time
+from flask import Flask, request, Response
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import Dispatcher, MessageHandler, Filters, CommandHandler, CallbackQueryHandler
 import logging
 import requests
-from datetime import datetime, timedelta
+import re
+import time
 from pymongo import MongoClient
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
-    InputMediaPhoto,
-    InputMediaVideo
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-    ConversationHandler
-)
+from io import BytesIO
 
-# تنظیمات اولیه
-BOT_TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
-OWNER_ID = 5637609683
-CHANNEL_USERNAME = "@netgoris"
-DATABASE_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-DB_NAME = "ai_telegram_bot"
-PORT = 1000  # پورت برای اجرا در Render
+# تنظیمات ربات و مدیر
+BOT_TOKEN = '8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0'
+ADMIN_ID = 5637609683
+REQUIRED_CHANNEL = '@netgoris'
+WEBHOOK_URL = 'https://chatgpt-qg71.onrender.com/' + BOT_TOKEN
 
-# حالت‌های گفتگو
-SUPPORT, ADMIN_REPLY = range(2)
+bot = Bot(token=BOT_TOKEN)
+app = Flask(__name__)
+dispatcher = Dispatcher(bot, None, use_context=True)
 
-# وب‌سرویس‌ها
-CHAT_SERVICES = [
-    "https://starsshoptl.ir/Ai/index.php?text={text}",
-    "https://starsshoptl.ir/Ai/index.php?model=gpt&text={text}",
-    "https://starsshoptl.ir/Ai/index.php?model=deepseek&text={text}"
-]
+logging.basicConfig(level=logging.INFO)
 
-DOWNLOAD_SERVICES = {
-    "instagram": "https://pouriam.top/eyephp/instagram?url={url}",
-    "spotify": "http://api.cactus-dev.ir/spotify.php?url={url}",
-    "pinterest": "https://haji.s2025h.space/pin/?url={url}&client_key=keyvip",
-    "image": "https://v3.api-free.ir/image/?text={text}"
-}
+# اتصال به دیتابیس MongoDB
+client = MongoClient("mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+db = client['telegram_bot']
+users_col = db['users']
 
-# اتصال به دیتابیس
-client = MongoClient(DATABASE_URI)
-db = client[DB_NAME]
-users_col = db["users"]
-messages_col = db["messages"]
-admin_col = db["admin"]
+# تنظیم Webhook
+bot.set_webhook(WEBHOOK_URL)
 
-# تنظیمات لاگ
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# ساختارهای in-memory برای شمارش پیام‌ها و وضعیت پشتیبانی
+user_message_count = {}
+user_blocked_until = {}
+support_state = {}
+pending_broadcast = None
 
-# مدیریت خطاهای وب‌سرویس
-class ServiceError(Exception):
-    pass
+def is_user_banned(user_id):
+    user = users_col.find_one({'user_id': user_id})
+    return user and user.get('banned', False)
 
-# --- توابع کمکی ---
-async def check_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """بررسی عضویت کاربر در کانال"""
-    try:
-        member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        return member.status in ["member", "administrator", "creator"]
-    except Exception as e:
-        logger.error(f"Error checking membership: {e}")
-        return False
+def set_user_joined(user_id):
+    users_col.update_one({'user_id': user_id}, {'$set': {'joined': True}}, upsert=True)
 
-async def is_admin(user_id: int) -> bool:
-    """بررسی ادمین بودن کاربر"""
-    return user_id == OWNER_ID or admin_col.find_one({"user_id": user_id})
+def add_user_if_not_exists(user_id):
+    if not users_col.find_one({'user_id': user_id}):
+        users_col.insert_one({'user_id': user_id, 'banned': False, 'joined': False})
 
-async def delete_join_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    """حذف پیام عضویت اجباری"""
-    if "join_message_id" in context.user_data:
-        try:
-            await context.bot.delete_message(
-                chat_id=chat_id,
-                message_id=context.user_data["join_message_id"]
-            )
-            del context.user_data["join_message_id"]
-        except Exception as e:
-            logger.error(f"Error deleting join message: {e}")
+def set_user_banned(user_id, banned=True):
+    users_col.update_one({'user_id': user_id}, {'$set': {'banned': banned}}, upsert=True)
 
-async def update_user_data(user: dict):
-    """به‌روزرسانی اطلاعات کاربر در دیتابیس"""
-    user_data = {
-        "user_id": user.id,
-        "username": user.username,
-        "first_name": user.first_name,
-        "last_name": user.last_name,
-        "last_activity": datetime.now(),
-        "message_count": 1
-    }
-    users_col.update_one({"user_id": user.id}, {"$set": user_data, "$inc": {"total_messages": 1}}, upsert=True)
-
-# --- دستورات اصلی ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مدیریت دستور /start"""
-    user = update.effective_user
-    chat_id = update.effective_chat.id
-    
-    await update_user_data(user)
-    
-    # بررسی عضویت
-    if await check_membership(user.id, context):
-        users_col.update_one({"user_id": user.id}, {"$set": {"is_member": True}})
-        await send_welcome(update, context)
+def start(update, context):
+    user_id = update.message.from_user.id
+    add_user_if_not_exists(user_id)
+    bot.send_message(ADMIN_ID, f"کاربر {user_id} ربات را استارت کرد.")
+    if is_user_banned(user_id):
+        context.bot.send_message(user_id, "شما مسدود هستید و نمی‌توانید از ربات استفاده کنید.")
         return
-    
-    # ارسال پیام عضویت اجباری
-    keyboard = [
-        [InlineKeyboardButton("عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
-        [InlineKeyboardButton("✅ تایید عضویت", callback_data="verify_membership")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    message = await update.message.reply_text(
-        "👋 سلام! برای استفاده از ربات باید در کانال ما عضو شوید:\n\n"
-        f"📢 کانال: {CHANNEL_USERNAME}\n\n"
-        "پس از عضویت روی دکمه «تایید عضویت» کلیک کنید.",
-        reply_markup=reply_markup
-    )
-    
-    context.user_data["join_message_id"] = message.message_id
+    join_btn = InlineKeyboardButton("عضویت در کانال", url=f"https://t.me/{REQUIRED_CHANNEL.strip('@')}")
+    confirm_btn = InlineKeyboardButton("تایید عضویت", callback_data="confirm_join")
+    markup = InlineKeyboardMarkup([[join_btn, confirm_btn]])
+    context.bot.send_message(user_id, "برای استفاده از ربات لطفاً ابتدا در کانال ما عضو شوید:", reply_markup=markup)
 
-async def verify_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """تایید عضویت کاربر در کانال"""
+def confirm_join_callback(update, context):
     query = update.callback_query
-    user = query.from_user
-    
-    if await check_membership(user.id, context):
-        users_col.update_one({"user_id": user.id}, {"$set": {"is_member": True}})
-        await delete_join_message(context, query.message.chat_id)
-        await send_welcome(update, context)
-    else:
-        await query.answer("❗️ هنوز در کانال عضو نشده‌اید! لطفاً ابتدا عضو شوید.", show_alert=True)
-
-async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ارسال پیام خوش‌آمدگویی"""
-    query = update.callback_query if update.callback_query else None
-    user = query.from_user if query else update.effective_user
-    chat_id = query.message.chat_id if query else update.effective_chat.id
-
-    # ایجاد کیبورد
-    keyboard = [
-        [KeyboardButton("📚 راهنما"), KeyboardButton("🛠 پشتیبانی")],
-        [KeyboardButton("🎨 ساخت تصویر")]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-    # پیام خوش‌آمد
-    welcome_text = (
-        f"✨ سلام {user.first_name}!\n\n"
-        "به ربات هوش مصنوعی خوش آمدید! 🤖\n\n"
-        "🔹 می‌توانید با ربات چت کنید\n"
-        "🔹 لینک‌های اینستاگرام، اسپاتیفای و پینترست را ارسال کنید\n"
-        "🔹 با دستور /image تصویر تولید کنید\n\n"
-        "برای شروع از دکمه‌های زیر استفاده کنید:"
-    )
-
-    if query:
-        await query.edit_message_text(
-            text=welcome_text,
-            reply_markup=reply_markup
-        )
-    else:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=welcome_text,
-            reply_markup=reply_markup
-        )
-
-async def show_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش راهنمای ربات"""
-    user = update.effective_user
-    chat_id = update.effective_chat.id
-    
-    # محتوای راهنما
-    guide_text = """
-📚 راهنمای کامل استفاده از ربات:
-
-🔹 چت هوش مصنوعی:
-• هر پیام متنی را ارسال کنید تا توسط هوش مصنوعی پردازش شود
-
-🔹 دانلود محتوا:
-• اینستاگرام: ارسال لینک پست/ریلز/استوری
-• اسپاتیفای: ارسال لینک آهنگ
-• پینترست: ارسال لینک پین
-
-🔹 تولید تصویر:
-• با دستور /image متن مورد نظر
-مثال: 
-/image منظره کوهستان با درختان سبز
-
-⚠️ قوانین و هشدارها:
-1. ارسال محتوای غیراخلاقی ممنوع است
-2. استفاده از ربات برای اهداف غیرقانونی ممنوع است
-3. محدودیت 4 درخواست در 2 دقیقه
-4. در صورت سوءاستفاده حساب کاربری مسدود می‌شود
-
-🛠 پشتیبانی:
-• برای گزارش مشکلات از دکمه «پشتیبانی» استفاده کنید
-• پاسخگویی در کمتر از 24 ساعت
-
-🔔 نکته:
-ربات از چندین سرویس هوش مصنوعی استفاده می‌کند و ممکن است پاسخ‌ها متفاوت باشند
-    """
-    
-    keyboard = [
-        [InlineKeyboardButton("🏠 بازگشت به صفحه اصلی", callback_data="back_to_main")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    # ویرایش پیام قبلی یا ارسال جدید
+    user_id = query.from_user.id
+    query.answer()
     try:
-        if "welcome_message_id" in context.user_data:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=context.user_data["welcome_message_id"],
-                text=guide_text,
-                reply_markup=reply_markup
-            )
-        else:
-            message = await update.message.reply_text(
-                text=guide_text,
-                reply_markup=reply_markup
-            )
-            context.user_data["guide_message_id"] = message.message_id
+        member = bot.get_chat_member(REQUIRED_CHANNEL, user_id)
     except Exception as e:
-        logger.error(f"Error showing guide: {e}")
-        message = await update.message.reply_text(
-            text=guide_text,
-            reply_markup=reply_markup
-        )
-        context.user_data["guide_message_id"] = message.message_id
+        logging.error(f"Error checking membership: {e}")
+        query.edit_message_text("خطا در بررسی عضویت. لطفا دوباره تلاش کنید.")
+        return
+    if member.status in ['member', 'creator', 'administrator']:
+        set_user_joined(user_id)
+        bot.delete_message(chat_id=user_id, message_id=query.message.message_id)
+        guide_btn = InlineKeyboardButton("📖 راهنما", callback_data="show_guide")
+        guide_markup = InlineKeyboardMarkup([[guide_btn]])
+        support_keyboard = ReplyKeyboardMarkup([["پشتیبانی"]], resize_keyboard=True)
+        welcome_text = "👋 به ربات خوش آمدید!\nلطفاً روی دکمه زیر کلیک کنید یا از ربات استفاده کنید."
+        context.bot.send_message(user_id, welcome_text, reply_markup=guide_markup)
+        context.bot.send_message(user_id, "برای ارتباط با پشتیبانی روی دکمه زیر کلیک کنید:", reply_markup=support_keyboard)
+    else:
+        query.answer("لطفاً ابتدا عضو کانال شوید و سپس دوباره تایید را بزنید.", show_alert=True)
 
-async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """بازگشت به صفحه اصلی"""
+def show_guide_callback(update, context):
     query = update.callback_query
-    await query.answer()
-    await send_welcome(update, context)
-
-async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مدیریت پیام‌های دریافتی"""
-    user = update.effective_user
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    
-    # بررسی عضویت
-    user_data = users_col.find_one({"user_id": user.id})
-    if not user_data or not user_data.get("is_member", False):
-        await start(update, context)
-        return
-    
-    # ضد اسپم
-    now = datetime.now()
-    if "last_message" in user_data:
-        last_msg_time = user_data["last_message"]
-        time_diff = (now - last_msg_time).total_seconds()
-        
-        if time_diff < 120 and user_data.get("message_count", 0) >= 4:
-            await message.reply_text("⏳ لطفاً 2 دقیقه صبر کنید و سپس پیام جدید ارسال کنید!")
-            return
-    
-    # به‌روزرسانی اطلاعات کاربر
-    users_col.update_one(
-        {"user_id": user.id},
-        {
-            "$set": {"last_message": now},
-            "$inc": {"message_count": 1}
-        }
+    user_id = query.from_user.id
+    query.answer()
+    guide_text = (
+        "📜 راهنمای ربات:\n"
+        "- لطفاً قوانین کانال را رعایت کنید و از ارسال مطالب نامناسب خودداری کنید.\n"
+        "- هشدار: ارسال اسپم یا سوءاستفاده منجر به مسدود شدن می‌شود.\n"
+        "- **چت هوش مصنوعی**: هر متنی ارسال کنید تا پاسخ دریافت کنید.\n"
+        "- **دانلودر لینک‌ها**: لینک‌های اینستاگرام، اسپاتیفای یا پینترست را ارسال کنید تا دانلود شود.\n"
+        "- **ساخت عکس**: بنویسید `عکس <متن انگلیسی>` تا تصویر تولید شود.\n"
     )
-    
-    # پردازش لینک‌ها
-    if message.text and re.match(r'https?://\S+', message.text):
-        await handle_links(update, context)
-        return
-    
-    # پردازش دستورات
-    if message.text and message.text.startswith('/image'):
-        await generate_image(update, context)
-        return
-    
-    # پردازش پیام متنی
-    await handle_text(update, context)
+    back_btn = InlineKeyboardButton("⬅️ بازگشت", callback_data="go_back")
+    context.bot.edit_message_text(chat_id=user_id, message_id=query.message.message_id,
+                                  text=guide_text, reply_markup=InlineKeyboardMarkup([[back_btn]]))
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پردازش پیام‌های متنی"""
-    user = update.effective_user
+def go_back_callback(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+    query.answer()
+    thanks_text = "🎉 متشکریم که ربات ما را انتخاب کردید!"
+    context.bot.edit_message_text(chat_id=user_id, message_id=query.message.message_id,
+                                  text=thanks_text)
+
+def handle_support_request(update, context):
+    user_id = update.message.from_user.id
+    if is_user_banned(user_id):
+        return
+    context.bot.send_message(user_id, "لطفاً پیام خود را ارسال کنید (یک پیام).", reply_markup=ReplyKeyboardRemove())
+    support_state[user_id] = True
+
+def forward_support_message(update, context):
+    user_id = update.message.from_user.id
+    try:
+        context.bot.forward_message(ADMIN_ID, chat_id=user_id, message_id=update.message.message_id)
+        context.bot.send_message(user_id, "✅ پیام شما ارسال شد، منتظر پاسخ باشید.")
+    except Exception as e:
+        logging.error(f"Error forwarding support message: {e}")
+        context.bot.send_message(user_id, "❌ خطا در ارسال پیام.")
+    support_state.pop(user_id, None)
+
+def handle_admin_reply(update, context):
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID or not update.message.reply_to_message:
+        return
+    replied = update.message.reply_to_message
+    if replied.forward_from:
+        target_id = replied.forward_from.id
+        text = update.message.text
+        context.bot.send_message(target_id, f"📣 پاسخ پشتیبانی:\n{text}")
+
+def ai_chat(update, context):
+    user_id = update.message.from_user.id
     text = update.message.text
-    
-    # پاسخ موقت
-    temp_msg = await update.message.reply_text("🔍 در حال پردازش درخواست...")
-    
-    # استفاده از وب‌سرویس‌های چت
-    for service in CHAT_SERVICES:
-        try:
-            response = requests.get(service.format(text=text), timeout=10)
-            if response.status_code == 200 and response.text.strip():
-                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=temp_msg.message_id)
-                await update.message.reply_text(response.text)
-                return
-        except Exception as e:
-            logger.error(f"Chat service error ({service}): {e}")
-            continue
-    
-    # اگر همه سرویس‌ها خطا دادند
-    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=temp_msg.message_id)
-    await update.message.reply_text("⚠️ متأسفیم! سرویس هوش مصنوعی در حال حاضر پاسخگو نیست. لطفاً کمی بعد تلاش کنید.")
-
-async def handle_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پردازش لینک‌های دریافتی"""
-    url = update.message.text
-    user = update.effective_user
-    chat_id = update.effective_chat.id
-    
-    # پاسخ موقت
-    temp_msg = await update.message.reply_text("⏳ در حال دریافت محتوا...")
-    
-    # تشخیص نوع لینک
-    if 'instagram.com' in url:
-        service_type = "instagram"
-    elif 'spotify.com' in url:
-        service_type = "spotify"
-    elif 'pinterest.' in url:
-        service_type = "pinterest"
-    else:
-        await context.bot.delete_message(chat_id=chat_id, message_id=temp_msg.message_id)
-        await update.message.reply_text("⚠️ لینک ارسالی پشتیبانی نمی‌شود.")
+    if is_user_banned(user_id) or text == "پشتیبانی":
         return
-    
-    try:
-        service_url = DOWNLOAD_SERVICES[service_type].format(url=url)
-        response = requests.get(service_url, timeout=15)
-        data = response.json()
-        
-        await context.bot.delete_message(chat_id=chat_id, message_id=temp_msg.message_id)
-        
-        # پردازش پاسخ‌های مختلف
-        if service_type == "instagram":
-            if "links" in data:
-                media_group = []
-                for i, media_url in enumerate(data["links"][:10]):  # حداکثر 10 مدیا
-                    if media_url.endswith(('.mp4', '.mov')):
-                        if i == 0:
-                            media_group.append(InputMediaVideo(media=media_url))
-                        else:
-                            media_group.append(InputMediaVideo(media=media_url))
-                    else:
-                        if i == 0:
-                            media_group.append(InputMediaPhoto(media=media_url))
-                        else:
-                            media_group.append(InputMediaPhoto(media=media_url))
-                
-                if media_group:
-                    await context.bot.send_media_group(chat_id=chat_id, media=media_group)
-            else:
-                raise ServiceError("پاسخ نامعتبر از سرویس اینستاگرام")
-        
-        elif service_type == "spotify":
-            if data.get("ok") and "download_url" in data.get("data", {}).get("track", {}):
-                await update.message.reply_audio(
-                    audio=data["data"]["track"]["download_url"],
-                    title=data["data"]["track"]["name"],
-                    performer=data["data"]["track"]["artists"],
-                    duration=int(data["data"]["track"]["duration"].split(':')[0])*60 + int(data["data"]["track"]["duration"].split(':')[1])
-                )
-            else:
-                raise ServiceError("پاسخ نامعتبر از سرویس اسپاتیفای")
-        
-        elif service_type == "pinterest":
-            if data.get("status") and "download_url" in data:
-                await update.message.reply_photo(data["download_url"])
-            else:
-                raise ServiceError("پاسخ نامعتبر از سرویس پینترست")
-                
-    except Exception as e:
-        logger.error(f"Download error ({service_type}): {e}")
-        await context.bot.delete_message(chat_id=chat_id, message_id=temp_msg.message_id)
-        await update.message.reply_text("❌ خطا در دریافت محتوا. لطفاً از معتبر بودن لینک اطمینان حاصل کنید.")
-
-async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """تولید تصویر با هوش مصنوعی"""
-    user = update.effective_user
-    chat_id = update.effective_chat.id
-    
-    try:
-        text = update.message.text.replace('/image', '').strip()
-        if not text:
-            await update.message.reply_text("❌ لطفاً متن توصیفی را وارد کنید.\nمثال: /image منظره کوهستان با آسمان آبی")
-            return
-        
-        # پاسخ موقت
-        temp_msg = await update.message.reply_text("🎨 در حال تولید تصویر...")
-        
-        service_url = DOWNLOAD_SERVICES["image"].format(text=text)
-        response = requests.get(service_url, timeout=20)
-        data = response.json()
-        
-        await context.bot.delete_message(chat_id=chat_id, message_id=temp_msg.message_id)
-        
-        if data.get("ok") and "result" in data:
-            await update.message.reply_photo(
-                photo=data["result"],
-                caption=f"🖼 تصویر تولید شده برای:\n{text}"
-            )
+    user_doc = users_col.find_one({'user_id': user_id})
+    if not user_doc or not user_doc.get('joined', False):
+        join_btn = InlineKeyboardButton("عضویت در کانال", url=f"https://t.me/{REQUIRED_CHANNEL.strip('@')}")
+        confirm_btn = InlineKeyboardButton("تایید عضویت", callback_data="confirm_join")
+        markup = InlineKeyboardMarkup([[join_btn, confirm_btn]])
+        context.bot.send_message(user_id, "⚠️ لطفاً ابتدا در کانال ما عضو شوید:", reply_markup=markup)
+        return
+    now = time.time()
+    if user_id in user_blocked_until and now < user_blocked_until[user_id]:
+        return
+    user_message_count[user_id] = user_message_count.get(user_id, 0) + 1
+    if user_message_count[user_id] >= 4:
+        user_blocked_until[user_id] = now + 120
+        user_message_count[user_id] = 0
+        context.bot.send_message(user_id, "⚠️ شما به دلیل ارسال سریع پیام‌ها برای ۲ دقیقه مسدود شدید.")
+        return
+    if support_state.get(user_id):
+        forward_support_message(update, context)
+        return
+    if text.startswith("عکس "):
+        prompt = text.split(" ", 1)[1]
+        if re.search(r'[\u0600-\u06FF]', prompt):
+            context.bot.send_message(user_id, "⚠️ لطفاً برای ساخت عکس متن را به انگلیسی وارد کنید.")
         else:
-            raise ServiceError("پاسخ نامعتبر از سرویس تولید تصویر")
-            
-    except Exception as e:
-        logger.error(f"Image generation error: {e}")
-        await context.bot.delete_message(chat_id=chat_id, message_id=temp_msg.message_id)
-        await update.message.reply_text("❌ خطا در تولید تصویر. لطفاً متن دیگری امتحان کنید.")
-
-# --- سیستم پشتیبانی ---
-async def support_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """شروع فرآیند پشتیبانی"""
-    await update.message.reply_text(
-        "📩 لطفاً پیام خود را برای پشتیبانی ارسال کنید:\n\n"
-        "برای لغو دستور /cancel را ارسال کنید.",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return SUPPORT
-
-async def process_support_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پردازش پیام پشتیبانی"""
-    user = update.effective_user
-    message = update.effective_message
-    
-    # ارسال پیام به مالک
-    forward_text = (
-        f"📩 پیام پشتیبانی جدید\n\n"
-        f"👤 کاربر: {user.full_name}\n"
-        f"🆔 ID: {user.id}\n"
-        f"📧 @{user.username}\n\n"
-        f"📝 پیام:\n{message.text}"
-    )
-    
-    keyboard = [[InlineKeyboardButton("✍️ پاسخ", callback_data=f"reply_{user.id}")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await context.bot.send_message(
-        chat_id=OWNER_ID,
-        text=forward_text,
-        reply_markup=reply_markup
-    )
-    
-    await update.message.reply_text(
-        "✅ پیام شما با موفقیت ارسال شد!\n"
-        "پاسخ شما در همین چت ارسال خواهد شد.\n\n"
-        "برای بازگشت به منوی اصلی /start را ارسال کنید.",
-        reply_markup=ReplyKeyboardMarkup.from_button(KeyboardButton("🏠 منوی اصلی"))
-    )
-    
-    return ConversationHandler.END
-
-async def cancel_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """لغو درخواست پشتیبانی"""
-    await update.message.reply_text(
-        "❌ درخواست پشتیبانی لغو شد.",
-        reply_markup=ReplyKeyboardMarkup.from_button(KeyboardButton("🏠 منوی اصلی"))
-    )
-    return ConversationHandler.END
-
-async def admin_reply_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """شروع پاسخ ادمین"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = int(query.data.split('_')[1])
-    context.user_data["reply_user_id"] = user_id
-    
-    await query.message.reply_text(
-        "✍️ لطفاً پاسخ خود را وارد کنید:\n\n"
-        "برای لغو /cancel را ارسال کنید."
-    )
-    return ADMIN_REPLY
-
-async def admin_reply_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ارسال پاسخ ادمین به کاربر"""
-    user_id = context.user_data["reply_user_id"]
-    reply_text = update.message.text
-    
-    try:
-        # ارسال پاسخ به کاربر
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=f"📬 پاسخ پشتیبانی:\n\n{reply_text}"
-        )
-        
-        # اطلاع به ادمین
-        await update.message.reply_text(
-            f"✅ پاسخ به کاربر {user_id} ارسال شد.",
-            reply_markup=ReplyKeyboardMarkup.from_button(KeyboardButton("🏠 منوی اصلی"))
-        )
-    except Exception as e:
-        await update.message.reply_text(
-            f"❌ ارسال ناموفق: {e}",
-            reply_markup=ReplyKeyboardMarkup.from_button(KeyboardButton("🏠 منوی اصلی"))
-        )
-    
-    return ConversationHandler.END
-
-async def admin_reply_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """لغو پاسخ ادمین"""
-    await update.message.reply_text(
-        "❌ پاسخ دهی لغو شد.",
-        reply_markup=ReplyKeyboardMarkup.from_button(KeyboardButton("🏠 منوی اصلی"))
-    )
-    return ConversationHandler.END
-
-# --- مدیریت ربات ---
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش آمار ربات (فقط برای ادمین)"""
-    if not await is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ دسترسی denied!")
+            image_resp = requests.get("https://v3.api-free.ir/image/?text=" + requests.utils.quote(prompt))
+            if image_resp.status_code == 200:
+                image_bytes = BytesIO(image_resp.content)
+                context.bot.send_photo(user_id, image_bytes)
+            else:
+                context.bot.send_message(user_id, "❌ خطا در دریافت تصویر.")
         return
-    
-    total_users = users_col.count_documents({})
-    active_users = users_col.count_documents({"last_activity": {"$gt": datetime.now() - timedelta(days=1)}})
-    total_messages = messages_col.count_documents({})
-    
-    stats_text = (
-        "📊 آمار ربات:\n\n"
-        f"👥 کاربران کل: {total_users}\n"
-        f"🟢 کاربران فعال (24h): {active_users}\n"
-        f"📩 پیام‌های کل: {total_messages}"
-    )
-    
-    await update.message.reply_text(stats_text)
-
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ارسال پیام همگانی (فقط برای ادمین)"""
-    if not await is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ دسترسی denied!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("❌ لطفاً پیام را وارد کنید.\nمثال: /broadcast متن پیام")
-        return
-    
-    message_text = ' '.join(context.args)
-    users = users_col.find({})
-    success = 0
-    failed = 0
-    
-    progress_msg = await update.message.reply_text(f"⏳ ارسال پیام به کاربران...\nموفق: {success} | ناموفق: {failed}")
-    
-    for user in users:
-        try:
-            await context.bot.send_message(
-                chat_id=user["user_id"],
-                text=message_text
-            )
-            success += 1
-        except:
-            failed += 1
-        
-        if (success + failed) % 10 == 0:
-            await progress_msg.edit_text(f"⏳ ارسال پیام به کاربران...\nموفق: {success} | ناموفق: {failed}")
-    
-    await progress_msg.edit_text(f"✅ ارسال همگانی تکمیل شد!\nموفق: {success} | ناموفق: {failed}")
-
-# --- تنظیمات اصلی ---
-def main() -> None:
-    """راه‌اندازی ربات"""
-    # ساخت اپلیکیشن
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # مدیریت گفتگوها
-    conv_handler_support = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^🛠 پشتیبانی$"), support_request)],
-        states={
-            SUPPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_support_message)]
-        },
-        fallbacks=[CommandHandler("cancel", cancel_support)],
-        allow_reentry=True
-    )
-    
-    conv_handler_admin_reply = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_reply_start, pattern=r"^reply_\d+$")],
-        states={
-            ADMIN_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_reply_send)]
-        },
-        fallbacks=[CommandHandler("cancel", admin_reply_cancel)],
-        allow_reentry=True
-    )
-    
-    # دستورات عمومی
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("image", generate_image))
-    application.add_handler(CommandHandler("stats", stats))
-    application.add_handler(CommandHandler("broadcast", broadcast))
-    
-    # کال‌بک‌ها
-    application.add_handler(CallbackQueryHandler(verify_membership, pattern="^verify_membership$"))
-    application.add_handler(CallbackQueryHandler(show_guide, pattern="^back_to_main$"))
-    
-    # پیام‌ها
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
-    application.add_handler(MessageHandler(filters.Regex("^📚 راهنما$"), show_guide))
-    
-    # اضافه کردن مدیریت گفتگوها
-    application.add_handler(conv_handler_support)
-    application.add_handler(conv_handler_admin_reply)
-    
-    # اجرای ربات
-    if os.environ.get('RENDER'):
-        # اجرا در Render با وب‌هوک
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path=BOT_TOKEN,
-            webhook_url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
-        )
+    if "instagram.com" in text or "instagr.am" in text:
+        api_url = f"https://pouriam.top/eyephp/instagram?url={requests.utils.quote(text)}"
+        prefix = "اینستاگرام"
+    elif "spotify.com" in text:
+        api_url = f"http://api.cactus-dev.ir/spotify.php?url={requests.utils.quote(text)}"
+        prefix = "اسپاتیفای"
+    elif "pinterest.com" in text:
+        api_url = f"https://haji.s2025h.space/pin/?url={requests.utils.quote(text)}&client_key=keyvip"
+        prefix = "پینترست"
     else:
-        # اجرای محلی با پولینگ
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        api_url = None
+    if api_url:
+        try:
+            resp = requests.get(api_url)
+            data = resp.json()
+        except Exception as e:
+            logging.error(f"Error calling {prefix} API: {e}")
+            context.bot.send_message(user_id, f"❌ خطا در دریافت اطلاعات از {prefix}.")
+            return
+        media_url = data.get('url') or data.get('file') or data.get('video') or data.get('image')
+        if not media_url:
+            context.bot.send_message(user_id, "❌ محتوا یافت نشد یا لینک نامعتبر است.")
+            return
+        try:
+            media_resp = requests.get(media_url)
+        except Exception as e:
+            logging.error(f"Error downloading media: {e}")
+            context.bot.send_message(user_id, "❌ خطا در دانلود محتوا.")
+            return
+        content_type = media_resp.headers.get('Content-Type', '')
+        if 'video' in content_type:
+            context.bot.send_video(user_id, media_resp.content)
+        elif 'image' in content_type:
+            context.bot.send_photo(user_id, media_resp.content)
+        elif 'audio' in content_type or 'mpeg' in content_type:
+            context.bot.send_audio(user_id, media_resp.content)
+        else:
+            context.bot.send_message(user_id, "❌ نوع فایل پشتیبانی نمی‌شود.")
+        return
+    endpoints = [
+        f"https://starsshoptl.ir/Ai/index.php?text={requests.utils.quote(text)}",
+        f"https://starsshoptl.ir/Ai/index.php?model=gpt&text={requests.utils.quote(text)}",
+        f"https://starsshoptl.ir/Ai/index.php?model=deepseek&text={requests.utils.quote(text)}"
+    ]
+    response_text = None
+    for url in endpoints:
+        try:
+            res = requests.get(url, timeout=10)
+            if res.status_code == 200 and res.text:
+                response_text = res.text
+                break
+        except:
+            continue
+    if response_text:
+        context.bot.send_message(user_id, response_text)
+    else:
+        context.bot.send_message(user_id, "❌ متاسفانه در حال حاضر قادر به پاسخگویی نیستم.")
+    user_message_count[user_id] = 0
 
-if __name__ == "__main__":
-    main()
+def ban_command(update, context):
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID: return
+    args = context.args
+    if not args:
+        context.bot.send_message(user_id, "لطفاً آیدی کاربر را بعد از /ban وارد کنید.")
+        return
+    try:
+        target = int(args[0])
+    except:
+        context.bot.send_message(user_id, "آیدی نامعتبر است.")
+        return
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("بله", callback_data=f"ban_{target}"), InlineKeyboardButton("خیر", callback_data="cancel_ban")]
+    ])
+    context.bot.send_message(user_id, f"آیا از بن کردن کاربر {target} مطمئن هستید؟", reply_markup=keyboard)
+
+def ban_confirm_callback(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+    if user_id != ADMIN_ID: return
+    data = query.data
+    if data.startswith("ban_"):
+        target = int(data.split("_")[1])
+        set_user_banned(target, True)
+        context.bot.send_message(target, "⚠️ شما توسط ادمین مسدود شدید.")
+        query.edit_message_text(f"کاربر {target} بن شد.")
+    elif data == "cancel_ban":
+        query.edit_message_text("❌ عملیات لغو شد.")
+
+def unban_command(update, context):
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID: return
+    args = context.args
+    if not args:
+        context.bot.send_message(user_id, "لطفاً آیدی کاربر را بعد از /unban وارد کنید.")
+        return
+    try:
+        target = int(args[0])
+    except:
+        context.bot.send_message(user_id, "آیدی نامعتبر است.")
+        return
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("بله", callback_data=f"unban_{target}"), InlineKeyboardButton("خیر", callback_data="cancel_unban")]
+    ])
+    context.bot.send_message(user_id, f"آیا از آزاد کردن کاربر {target} مطمئن هستید؟", reply_markup=keyboard)
+
+def unban_confirm_callback(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+    if user_id != ADMIN_ID: return
+    data = query.data
+    if data.startswith("unban_"):
+        target = int(data.split("_")[1])
+        set_user_banned(target, False)
+        query.edit_message_text(f"کاربر {target} آزاد شد.")
+        context.bot.send_message(target, "✅ حساب شما آزاد شد.")
+    elif data == "cancel_unban":
+        query.edit_message_text("❌ عملیات لغو شد.")
+
+def broadcast_command(update, context):
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID: return
+    global pending_broadcast
+    message_text = ' '.join(context.args)
+    if not message_text:
+        context.bot.send_message(user_id, "لطفاً متن پیام را بعد از /broadcast وارد کنید.")
+        return
+    pending_broadcast = message_text
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("ارسال", callback_data="send_broadcast"), InlineKeyboardButton("لغو", callback_data="cancel_bc")]
+    ])
+    context.bot.send_message(user_id, "آیا مایل به ارسال پیام به تمام کاربران هستید؟", reply_markup=keyboard)
+
+def send_broadcast_callback(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+    if user_id != ADMIN_ID: return
+    global pending_broadcast
+    if pending_broadcast:
+        all_users = users_col.find({'banned': False})
+        for usr in all_users:
+            try:
+                context.bot.send_message(usr['user_id'], pending_broadcast)
+            except Exception as e:
+                logging.warning(f"Broadcast to {usr['user_id']} failed: {e}")
+        query.edit_message_text("✅ پیام به همه کاربران ارسال شد.")
+    pending_broadcast = None
+
+def cancel_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text("❌ عملیات لغو شد.")
+
+def list_command(update, context):
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID: return
+    banned_users = [u['user_id'] for u in users_col.find({'banned': True})]
+    active_users = [u['user_id'] for u in users_col.find({'banned': False})]
+    text = f"🔹 تعداد کل کاربران: {users_col.count_documents({})}\n"
+    text += f"🔸 کاربران فعال: {len(active_users)}\n"
+    text += f"🔸 کاربران مسدود: {len(banned_users)}\n"
+    text += f"🛑 لیست کاربران مسدود:\n{', '.join(map(str, banned_users))}\n"
+    context.bot.send_message(user_id, text)
+
+dispatcher.add_handler(CommandHandler('start', start))
+dispatcher.add_handler(CommandHandler('ban', ban_command))
+dispatcher.add_handler(CommandHandler('unban', unban_command))
+dispatcher.add_handler(CommandHandler('broadcast', broadcast_command))
+dispatcher.add_handler(CommandHandler('list', list_command))
+
+dispatcher.add_handler(CallbackQueryHandler(confirm_join_callback, pattern='^confirm_join$'))
+dispatcher.add_handler(CallbackQueryHandler(show_guide_callback, pattern='^show_guide$'))
+dispatcher.add_handler(CallbackQueryHandler(go_back_callback, pattern='^go_back$'))
+dispatcher.add_handler(CallbackQueryHandler(ban_confirm_callback, pattern='^ban_'))
+dispatcher.add_handler(CallbackQueryHandler(ban_confirm_callback, pattern='^cancel_ban$'))
+dispatcher.add_handler(CallbackQueryHandler(unban_confirm_callback, pattern='^unban_'))
+dispatcher.add_handler(CallbackQueryHandler(unban_confirm_callback, pattern='^cancel_unban$'))
+dispatcher.add_handler(CallbackQueryHandler(send_broadcast_callback, pattern='^send_broadcast$'))
+dispatcher.add_handler(CallbackQueryHandler(cancel_callback, pattern='^cancel_bc$'))
+
+dispatcher.add_handler(MessageHandler(Filters.regex('^پشتیبانی$'), handle_support_request))
+dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, ai_chat))
+dispatcher.add_handler(MessageHandler(Filters.text & Filters.user(ADMIN_ID) & Filters.reply, handle_admin_reply))
+
+@app.route('/' + BOT_TOKEN, methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return 'OK'
+
+@app.route('/')
+def index():
+    return 'Bot is running.'
+
+if __name__ == '__main__':
+    app.run()
