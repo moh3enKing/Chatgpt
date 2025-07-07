@@ -1,6 +1,9 @@
 import logging
+import datetime
 from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+)
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
@@ -8,138 +11,153 @@ from telegram.ext import (
 import aiohttp
 from pymongo import MongoClient
 
+# ====== تنظیمات ======
 BOT_TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
 OWNER_ID = 5637609683
-CHANNEL_USERNAME = "@netgoris"
 MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
+PORT = 10000
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 application = Application.builder().token(BOT_TOKEN).build()
 
+# اتصال به دیتابیس MongoDB
 client = MongoClient(MONGO_URI)
-db = client['bot']
-users_col = db['users']
-support_col = db['support']
+db = client["botdb"]
+users_col = db["users"]
+support_col = db["support"]
+messages_col = db["messages"]
 
-# --- HELPER FUNCTIONS ---
-
-async def send_owner_message(text):
-    try:
-        await application.bot.send_message(OWNER_ID, text)
-    except Exception as e:
-        logging.error(f"Error sending owner message: {e}")
-
-async def send_help_message(update: Update):
-    keyboard = [
-        [InlineKeyboardButton("⬅️ بازگشت", callback_data="back")]
-    ]
-    help_text = (
-        "راهنمای ربات هوش مصنوعی:\n\n"
-        "1. برای چت با ربات کافی است پیام متنی خود را ارسال کنید.\n"
-        "2. برای ساخت تصویر با دستور `عکس متن_انگلیسی` پیام دهید.\n"
-        "3. برای دانلود از اینستاگرام، اسپاتیفای و پینترست، فقط لینک مستقیم بفرستید.\n"
-        "   - اینستاگرام: لینک پست یا ویدیو\n"
-        "   - اسپاتیفای: لینک ترک موسیقی\n"
-        "   - پینترست: لینک تصویر\n"
-        "4. دکمه 'پشتیبانی' را برای ارسال پیام به مدیر استفاده کنید.\n\n"
-        "⚠️ لطفاً قوانین ربات را رعایت کنید:\n"
-        "- ارسال پیام‌های اسپم ممنوع است.\n"
-        "- توهین یا پیام‌های نامناسب باعث بلاک شدن خواهد شد.\n\n"
-        "این ربات در نسخه اولیه خود است و به زودی آپدیت می‌شود."
+# کیبورد پشتیبانی (برای پیوی)
+def support_keyboard():
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("🛠️ پشتیبانی"), KeyboardButton("❌ لغو پشتیبانی")]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
     )
-    await update.callback_query.message.edit_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def send_welcome_message(update: Update):
-    keyboard = [
+# کیبورد خوش آمد و راهنما (دکمه‌های شیشه‌ای)
+def welcome_inline_keyboard():
+    buttons = [
         [InlineKeyboardButton("📖 راهنما", callback_data="help")],
-        [InlineKeyboardButton("🛠️ پشتیبانی", callback_data="support")]
+        [InlineKeyboardButton("🛠️ پشتیبانی", callback_data="support")],
     ]
-    welcome_text = (
-        f"سلام {update.effective_user.first_name}!\n"
-        "به ربات هوش مصنوعی خوش آمدید.\n"
-        "برای مشاهده راهنما روی دکمه زیر کلیک کنید."
-    )
-    await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    return InlineKeyboardMarkup(buttons)
 
-# --- HANDLERS ---
+# متن خوش آمد
+WELCOME_TEXT = (
+    "سلام {}!\n"
+    "به ربات هوش مصنوعی خوش آمدید.\n"
+    "برای استفاده از ربات دکمه‌های زیر را ببینید."
+)
 
+# متن راهنما رسمی و جامع
+HELP_TEXT = (
+    "📚 راهنمای استفاده از ربات هوش مصنوعی:\n\n"
+    "۱. چت: کافیست پیام متنی خود را ارسال کنید تا ربات پاسخ دهد.\n"
+    "۲. ساخت تصویر: با ارسال پیام به شکل:\n"
+    "   عکس متن_انگلیسی\n"
+    "   یک تصویر ساخته و ارسال خواهد شد. (متن باید انگلیسی باشد)\n"
+    "۳. دانلود محتوا:\n"
+    "   - اینستاگرام: لینک پست یا ویدئو ارسال کنید.\n"
+    "   - اسپاتیفای: لینک ترک موسیقی ارسال کنید.\n"
+    "   - پینترست: لینک تصویر ارسال کنید.\n"
+    "۴. پشتیبانی: با کلیک روی دکمه پشتیبانی پیام خود را به مدیر ارسال کنید.\n\n"
+    "⚠️ قوانین ربات:\n"
+    "- لطفا از ارسال پیام‌های اسپم خودداری کنید.\n"
+    "- پیام‌های نامناسب باعث بلاک شدن خواهند شد.\n\n"
+    "ربات در نسخه اولیه است و در حال به‌روزرسانی می‌باشد."
+)
+
+THANKS_TEXT = (
+    "ممنون که ربات ما را انتخاب کردید.\n"
+    "اگر سوال یا مشکلی داشتید، با دکمه پشتیبانی در ارتباط باشید."
+)
+
+# --- هندلر استارت ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not users_col.find_one({"user_id": user.id}):
         users_col.insert_one({"user_id": user.id})
-        await send_owner_message(f"کاربر جدید: {user.full_name} - {user.id}")
-    await send_welcome_message(update)
+        await application.bot.send_message(
+            OWNER_ID, f"کاربر جدید:\n{user.full_name} ({user.id})"
+        )
 
+    # ارسال پیام خوش آمد با دکمه‌های شیشه‌ای
+    await update.message.reply_text(
+        WELCOME_TEXT.format(user.first_name),
+        reply_markup=welcome_inline_keyboard(),
+    )
+
+# --- هندلر دکمه‌ها ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     data = query.data
+    await query.answer()
 
     if data == "help":
-        await send_help_message(update)
+        await query.message.edit_text(
+            HELP_TEXT,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="back")]])
+        )
     elif data == "back":
-        keyboard = [
-            [InlineKeyboardButton("📖 راهنما", callback_data="help")],
-            [InlineKeyboardButton("🛠️ پشتیبانی", callback_data="support")]
-        ]
-        text = "ممنون که ربات ما را انتخاب کردید."
-        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        # وقتی برگشت داده شد متن تشکر نمایش داده شود و دکمه راهنما زیرش باشد
+        await query.message.edit_text(
+            THANKS_TEXT,
+            reply_markup=welcome_inline_keyboard()
+        )
     elif data == "support":
+        # فعال کردن حالت پشتیبانی برای کاربر
         support_col.update_one(
-            {"user_id": query.from_user.id},
-            {"$set": {"support": True}},
-            upsert=True
+            {"user_id": query.from_user.id}, {"$set": {"supporting": True}}, upsert=True
         )
         await query.message.edit_text(
-            "حالا پیام خود را ارسال کنید، پیام شما به مدیر فرستاده می‌شود.\n"
-            "برای خروج از پشتیبانی دستور /cancel را ارسال کنید."
+            "حالا پیام خود را ارسال کنید تا برای مدیر فرستاده شود.\n"
+            "برای لغو پشتیبانی دستور ❌ لغو پشتیبانی را ارسال کنید."
         )
     else:
-        await query.message.edit_text("دستور ناشناخته.")
+        await query.message.edit_text("دستور نامعتبر است.")
 
-async def support_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    support_data = support_col.find_one({"user_id": user.id})
-    if support_data and support_data.get("support", False):
-        # ارسال پیام به ادمین
-        text = f"پیام پشتیبانی از {user.full_name} ({user.id}):\n{update.message.text}"
-        sent = await application.bot.send_message(OWNER_ID, text)
-        # ذخیره شناسه پیام برای ریپلای بعدی ادمین به کاربر (می‌توان دیتابیس افزود)
-        support_col.update_one({"user_id": user.id}, {"$set": {"last_msg_id": sent.message_id}})
-        await update.message.reply_text("پیام شما برای مدیر ارسال شد.")
-    else:
-        # اگر در حالت پشتیبانی نبود پیام را نادیده بگیر یا پردازش عادی کن
-        pass
-
-async def cancel_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    support_col.update_one({"user_id": user.id}, {"$set": {"support": False}})
-    await update.message.reply_text("از حالت پشتیبانی خارج شدید.")
-
-# --- پیام های متنی (چت و دانلود) ---
-
+# --- هندلر پیام متنی ---
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text
 
-    # ضد اسپم: اگر کاربر 4 پیام پشت سر هم در 2 دقیقه داده، سکوت کن
-    recent_msgs = list(db['messages'].find({"user_id": user.id}).sort("date",-1).limit(4))
+    # ضد اسپم: بررسی 4 پیام اخیر در 2 دقیقه
+    now = datetime.datetime.utcnow()
+    recent_msgs = list(messages_col.find({"user_id": user.id}).sort("date", -1).limit(4))
     if len(recent_msgs) == 4:
-        import datetime
-        now = datetime.datetime.utcnow()
-        times = [m['date'] for m in recent_msgs]
-        diff = (now - times[-1]).total_seconds()
+        diff = (now - recent_msgs[-1]["date"]).total_seconds()
         if diff <= 120:
-            await update.message.reply_text("شما پیام‌های زیادی ارسال کردید، لطفا دو دقیقه صبر کنید.")
+            await update.message.reply_text("شما پیام‌های زیادی ارسال کردید، لطفاً ۲ دقیقه صبر کنید.")
             return
-    db['messages'].insert_one({"user_id": user.id, "text": text, "date": datetime.datetime.utcnow()})
+    messages_col.insert_one({"user_id": user.id, "text": text, "date": now})
 
+    # بررسی وضعیت پشتیبانی
+    support_data = support_col.find_one({"user_id": user.id})
+    if support_data and support_data.get("supporting"):
+        # ارسال پیام به مدیر
+        try:
+            sent_msg = await application.bot.send_message(
+                OWNER_ID,
+                f"پیام پشتیبانی از {user.full_name} ({user.id}):\n{text}"
+            )
+            # ذخیره شناسه پیام برای ریپلای بعدی
+            support_col.update_one(
+                {"user_id": user.id},
+                {"$set": {"last_msg_id": sent_msg.message_id}}
+            )
+            await update.message.reply_text("پیام شما برای مدیر ارسال شد.")
+        except Exception as e:
+            await update.message.reply_text("خطایی رخ داد، لطفا بعداً تلاش کنید.")
+        return
+
+    # اگر پیام پشتیبانی نبود پردازش معمولی
     if text.startswith("عکس "):
         prompt = text[5:].strip()
         await generate_image(update, prompt)
@@ -152,10 +170,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await chat_ai(update, text)
 
-# --- وب سرویس ها ---
+# --- لغو پشتیبانی ---
+async def cancel_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    support_col.update_one({"user_id": user.id}, {"$set": {"supporting": False}})
+    await update.message.reply_text("از حالت پشتیبانی خارج شدید.", reply_markup=support_keyboard())
+
+# --- وب سرویس‌ها ---
 
 async def generate_image(update: Update, prompt: str):
-    # توجه: متن باید انگلیسی باشد
     url = f"https://v3.api-free.ir/image/?text={prompt}"
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
@@ -167,13 +190,21 @@ async def generate_image(update: Update, prompt: str):
     await update.message.reply_text("مشکلی در ساخت تصویر رخ داد.")
 
 async def download_instagram(update: Update, url: str):
-    api = "https://pouriam.top/eyephp/instagram?url="
-    await download_media(update, api + url)
+    api_url = f"https://pouriam.top/eyephp/instagram?url={url}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(api_url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                links = data.get("links")
+                if links and len(links) > 0:
+                    await update.message.reply_video(video=links[0])
+                    return
+    await update.message.reply_text("مشکلی در دانلود اینستاگرام رخ داد.")
 
 async def download_spotify(update: Update, url: str):
-    api = "http://api.cactus-dev.ir/spotify.php?url="
+    api_url = f"http://api.cactus-dev.ir/spotify.php?url={url}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(api + url) as resp:
+        async with session.get(api_url) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 if data.get("ok"):
@@ -184,68 +215,9 @@ async def download_spotify(update: Update, url: str):
     await update.message.reply_text("مشکلی در دانلود اسپاتیفای رخ داد.")
 
 async def download_pinterest(update: Update, url: str):
-    api = "https://haji.s2025h.space/pin/?url="
+    api_url = f"https://haji.s2025h.space/pin/?url={url}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(api + url) as resp:
+        async with session.get(api_url) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                if data.get("status"):
-                    await update.message.reply_photo(photo=data["download_url"])
-                    return
-    await update.message.reply_text("مشکلی در دانلود پینترست رخ داد.")
-
-async def download_media(update: Update, url: str):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                links = data.get("links")
-                if links:
-                    for link in links:
-                        # ارسال اولین لینک موجود
-                        await update.message.reply_video(video=link)
-                        break
-                    return
-    await update.message.reply_text("مشکلی در دانلود اینستاگرام رخ داد.")
-
-async def chat_ai(update: Update, text: str):
-    apis = [
-        "https://starsshoptl.ir/Ai/index.php?text=",
-        "https://starsshoptl.ir/Ai/index.php?model=gpt&text=",
-        "https://starsshoptl.ir/Ai/index.php?model=deepseek&text="
-    ]
-    async with aiohttp.ClientSession() as session:
-        for api in apis:
-            try:
-                async with session.get(api + text) as resp:
-                    if resp.status == 200:
-                        res_text = await resp.text()
-                        if res_text.strip():
-                            await update.message.reply_text(res_text.strip())
-                            return
-            except:
-                continue
-    await update.message.reply_text("خطایی در پاسخگویی هوش مصنوعی رخ داد.")
-
-# --- اجرای ربات ---
-
-@app.route("/", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    application.update_queue.put(update)
-    return "ok"
-
-if __name__ == "__main__":
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    application.add_handler(CommandHandler("cancel", cancel_support))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, support_message))
-
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=10000,
-        url_path=BOT_TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
-    )
-    app.run(host="0.0.0.0", port=10000)
+                if data.get("
