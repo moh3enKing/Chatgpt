@@ -2,6 +2,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from flask import Flask, request
 import requests
+import certifi
 from pymongo import MongoClient
 from datetime import datetime, timedelta
 import re
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
 ADMIN_ID = 5637609683
 CHANNEL_ID = "@netgoris"
-MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0&tls=true"
+MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&tls=true"
 WEBHOOK_URL = f"https://chatgpt-qg71.onrender.com/{TOKEN}"
 
 # وب‌سرویس‌ها
@@ -33,7 +34,13 @@ IMAGE_API = "https://v3.api-free.ir/image/?text={}"
 
 # اتصال به MongoDB
 try:
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, ssl=True)  # حذف ssl_cert_reqs
+    client = MongoClient(
+        MONGO_URI,
+        serverSelectionTimeoutMS=30000,
+        ssl=True,
+        tlsAllowInvalidCertificates=True,
+        tlsCAFile=certifi.where()  # استفاده از گواهینامه‌های معتبر
+    )
     db = client["telegram_bot"]
     users_collection = db["users"]
     spam_collection = db["spam"]
@@ -41,7 +48,7 @@ try:
     logger.info("MongoDB connection successful")
 except Exception as e:
     logger.error(f"MongoDB connection error: {str(e)}")
-    raise  # برای تست، خطا رو پرت می‌کنه تا مطمئن بشیم مشکل رو می‌بینیم
+    raise  # برای تست، خطا رو پرت می‌کنه
 
 # تنظیم ربات و Flask
 bot = telebot.TeleBot(TOKEN)
