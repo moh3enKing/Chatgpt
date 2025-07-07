@@ -31,6 +31,7 @@ OWNER_ID = 5637609683
 CHANNEL_USERNAME = "@netgoris"
 DATABASE_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 DB_NAME = "ai_telegram_bot"
+PORT = 1000  # پورت برای اجرا در Render
 
 # حالت‌های گفتگو
 SUPPORT, ADMIN_REPLY = range(2)
@@ -504,6 +505,7 @@ async def admin_reply_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ پاسخ به کاربر {user_id} ارسال شد.",
             reply_markup=ReplyKeyboardMarkup.from_button(KeyboardButton("🏠 منوی اصلی"))
+        )
     except Exception as e:
         await update.message.reply_text(
             f"❌ ارسال ناموفق: {e}",
@@ -575,6 +577,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- تنظیمات اصلی ---
 def main() -> None:
     """راه‌اندازی ربات"""
+    # ساخت اپلیکیشن
     application = Application.builder().token(BOT_TOKEN).build()
     
     # مدیریت گفتگوها
@@ -615,7 +618,17 @@ def main() -> None:
     application.add_handler(conv_handler_admin_reply)
     
     # اجرای ربات
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    if os.environ.get('RENDER'):
+        # اجرا در Render با وب‌هوک
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=BOT_TOKEN,
+            webhook_url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
+        )
+    else:
+        # اجرای محلی با پولینگ
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
