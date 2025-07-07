@@ -77,18 +77,22 @@ def admin_keyboard():
 
 # تابع بررسی اسپم
 def check_spam(user_id):
-    now = datetime.now()
-    user_spam = spam_collection.find_one({"user_id": user_id})
-    if user_spam:
-        messages = user_spam.get("messages", [])
-        messages = [msg for msg in messages if now - msg["time"] < timedelta(minutes=2)]
-        if len(messages) >= 4:
-            return False, now - messages[-1]["time"]
-        messages.append({"time": now})
-        spam_collection.update_one({"user_id": user_id}, {"$set": {"messages": messages}}, upsert=True)
-    else:
-        spam_collection.insert_one({"user_id": user_id, "messages": [{"time": now}]})
-    return True, None
+    try:
+        now = datetime.now()
+        user_spam = spam_collection.find_one({"user_id": user_id})
+        if user_spam:
+            messages = user_spam.get("messages", [])
+            messages = [msg for msg in messages if now - msg["time"] < timedelta(minutes=2)]
+            if len(messages) >= 4:
+                return False, now - messages[-1]["time"]
+            messages.append({"time": now})
+            spam_collection.update_one({"user_id": user_id}, {"$set": {"messages": messages}}, upsert=True)
+        else:
+            spam_collection.insert_one({"user_id": user_id, "messages": [{"time": now}]})
+        return True, None
+    except Exception as e:
+        logger.error(f"Spam check error: {e}")
+        return False, None
 
 # تابع دریافت پاسخ از وب‌سرویس چت
 def get_chat_response(text):
@@ -137,10 +141,21 @@ def download_file(url, service):
 def start(message):
     user_id = message.from_user.id
     try:
+        # بررسی اتصال به MongoDB
+        if not client.server_info():
+            logger.error("MongoDB not connected")
+            bot.send_message(message.chat.id, "❌ خطا در اتصال به دیتابیس. لطفاً دوباره امتحان کنید.")
+            return
+
+        # ثبت کاربر جدید
         if not users_collection.find_one({"user_id": user_id}):
             users_collection.insert_one({"user_id": user_id, "first_start": datetime.now()})
-            bot.send_message(ADMIN_ID, f"کاربر جدید: {message.from_user.username or message.from_user.first_name} ({user_id})")
-        
+            try:
+                bot.send_message(ADMIN_ID, f"کاربر جدید: {message.from_user.username or message.from_user.first_name} ({user_id})")
+            except Exception as e:
+                logger.error(f"Error sending new user notification: {e}")
+
+        # بررسی عضویت در کانال
         if not check_channel_membership(user_id):
             bot.send_message(message.chat.id, "لطفاً ابتدا در کانال ما عضو شوید:", reply_markup=join_keyboard())
         else:
