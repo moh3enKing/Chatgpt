@@ -233,7 +233,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
 
-def main():
+async def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -247,7 +247,9 @@ def main():
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_error_handler(error_handler)
 
-    app.run_webhook(
+    # تنظیم Webhook
+    await app.bot.set_webhook(url=WEBHOOK_URL)
+    await app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path="/webhook",
@@ -255,4 +257,5 @@ def main():
     )
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
