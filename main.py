@@ -1,106 +1,148 @@
 import logging
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, CallbackQueryHandler, filters
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, filters
+)
 import aiohttp
 from pymongo import MongoClient
-import os
 
-# اطلاعات اصلی
 BOT_TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
 OWNER_ID = 5637609683
 CHANNEL_USERNAME = "@netgoris"
 MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
 
-client = MongoClient(MONGO_URI)
-db = client['bot']
-users_col = db['users']
-
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
 app = Flask(__name__)
 application = Application.builder().token(BOT_TOKEN).build()
 
-# بررسی عضویت کانال
-async def is_user_member(user_id):
-    try:
-        member = await application.bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        return member.status in ["member", "administrator", "creator"]
-    except:
-        return False
+client = MongoClient(MONGO_URI)
+db = client['bot']
+users_col = db['users']
+support_col = db['support']
 
-# استارت
+# --- HELPER FUNCTIONS ---
+
+async def send_owner_message(text):
+    try:
+        await application.bot.send_message(OWNER_ID, text)
+    except Exception as e:
+        logging.error(f"Error sending owner message: {e}")
+
+async def send_help_message(update: Update):
+    keyboard = [
+        [InlineKeyboardButton("⬅️ بازگشت", callback_data="back")]
+    ]
+    help_text = (
+        "راهنمای ربات هوش مصنوعی:\n\n"
+        "1. برای چت با ربات کافی است پیام متنی خود را ارسال کنید.\n"
+        "2. برای ساخت تصویر با دستور `عکس متن_انگلیسی` پیام دهید.\n"
+        "3. برای دانلود از اینستاگرام، اسپاتیفای و پینترست، فقط لینک مستقیم بفرستید.\n"
+        "   - اینستاگرام: لینک پست یا ویدیو\n"
+        "   - اسپاتیفای: لینک ترک موسیقی\n"
+        "   - پینترست: لینک تصویر\n"
+        "4. دکمه 'پشتیبانی' را برای ارسال پیام به مدیر استفاده کنید.\n\n"
+        "⚠️ لطفاً قوانین ربات را رعایت کنید:\n"
+        "- ارسال پیام‌های اسپم ممنوع است.\n"
+        "- توهین یا پیام‌های نامناسب باعث بلاک شدن خواهد شد.\n\n"
+        "این ربات در نسخه اولیه خود است و به زودی آپدیت می‌شود."
+    )
+    await update.callback_query.message.edit_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def send_welcome_message(update: Update):
+    keyboard = [
+        [InlineKeyboardButton("📖 راهنما", callback_data="help")],
+        [InlineKeyboardButton("🛠️ پشتیبانی", callback_data="support")]
+    ]
+    welcome_text = (
+        f"سلام {update.effective_user.first_name}!\n"
+        "به ربات هوش مصنوعی خوش آمدید.\n"
+        "برای مشاهده راهنما روی دکمه زیر کلیک کنید."
+    )
+    await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# --- HANDLERS ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not await is_user_member(user.id):
-        keyboard = [
-            [InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")],
-            [InlineKeyboardButton("✅ تایید عضویت", callback_data="verify_join")]
-        ]
-        await update.message.reply_text("🔒 لطفا ابتدا عضو کانال شوید و سپس تایید بزنید.", reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        if not users_col.find_one({"user_id": user.id}):
-            users_col.insert_one({"user_id": user.id})
-            await application.bot.send_message(OWNER_ID, f"✅ کاربر جدید:\n{user.full_name} - {user.id}")
-        await send_welcome(update)
+    if not users_col.find_one({"user_id": user.id}):
+        users_col.insert_one({"user_id": user.id})
+        await send_owner_message(f"کاربر جدید: {user.full_name} - {user.id}")
+    await send_welcome_message(update)
 
-# پیام خوش آمد و راهنما
-async def send_welcome(update):
-    keyboard = [
-        [InlineKeyboardButton("📖 راهنما", callback_data="show_help")]
-    ]
-    await update.message.reply_text(
-        "🎉 به ربات هوش مصنوعی خوش آمدید!\nبرای مشاهده امکانات روی دکمه زیر بزنید.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-# دکمه‌ها
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user = query.from_user
+    data = query.data
 
-    if query.data == "verify_join":
-        if await is_user_member(user.id):
-            await query.message.delete()
-            await send_welcome(update)
-        else:
-            await query.answer("⛔ هنوز عضو کانال نیستید!", show_alert=True)
-
-    elif query.data == "show_help":
-        keyboard = [[InlineKeyboardButton("⬅️ بازگشت", callback_data="back_home")]]
-        await query.message.edit_text(
-            "📖 راهنمای ربات:\n\n"
-            "✅ چت معمولی = پاسخ هوش مصنوعی\n"
-            "✅ ارسال لینک اینستاگرام، اسپاتیفای، پینترست = دریافت محتوا\n"
-            "✅ دستور ساخت عکس: `عکس متن انگلیسی`\n\n"
-            "⚠️ قوانین:\n"
-            "⛔ اسپم = سکوت موقت\n"
-            "🔧 نسخه اولیه، آپدیت خواهد شد.\n\n"
-            "👨‍💻 پشتیبانی همیشه در دسترس است.",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+    if data == "help":
+        await send_help_message(update)
+    elif data == "back":
+        keyboard = [
+            [InlineKeyboardButton("📖 راهنما", callback_data="help")],
+            [InlineKeyboardButton("🛠️ پشتیبانی", callback_data="support")]
+        ]
+        text = "ممنون که ربات ما را انتخاب کردید."
+        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data == "support":
+        support_col.update_one(
+            {"user_id": query.from_user.id},
+            {"$set": {"support": True}},
+            upsert=True
         )
-
-    elif query.data == "back_home":
-        keyboard = [[InlineKeyboardButton("📖 راهنما", callback_data="show_help")]]
         await query.message.edit_text(
-            "🙏 ممنون که ربات ما را انتخاب کردید. امیدواریم راضی باشید.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "حالا پیام خود را ارسال کنید، پیام شما به مدیر فرستاده می‌شود.\n"
+            "برای خروج از پشتیبانی دستور /cancel را ارسال کنید."
         )
+    else:
+        await query.message.edit_text("دستور ناشناخته.")
 
-# پیام‌ها
+async def support_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    support_data = support_col.find_one({"user_id": user.id})
+    if support_data and support_data.get("support", False):
+        # ارسال پیام به ادمین
+        text = f"پیام پشتیبانی از {user.full_name} ({user.id}):\n{update.message.text}"
+        sent = await application.bot.send_message(OWNER_ID, text)
+        # ذخیره شناسه پیام برای ریپلای بعدی ادمین به کاربر (می‌توان دیتابیس افزود)
+        support_col.update_one({"user_id": user.id}, {"$set": {"last_msg_id": sent.message_id}})
+        await update.message.reply_text("پیام شما برای مدیر ارسال شد.")
+    else:
+        # اگر در حالت پشتیبانی نبود پیام را نادیده بگیر یا پردازش عادی کن
+        pass
+
+async def cancel_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    support_col.update_one({"user_id": user.id}, {"$set": {"support": False}})
+    await update.message.reply_text("از حالت پشتیبانی خارج شدید.")
+
+# --- پیام های متنی (چت و دانلود) ---
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text
 
-    if not await is_user_member(user.id):
-        return
+    # ضد اسپم: اگر کاربر 4 پیام پشت سر هم در 2 دقیقه داده، سکوت کن
+    recent_msgs = list(db['messages'].find({"user_id": user.id}).sort("date",-1).limit(4))
+    if len(recent_msgs) == 4:
+        import datetime
+        now = datetime.datetime.utcnow()
+        times = [m['date'] for m in recent_msgs]
+        diff = (now - times[-1]).total_seconds()
+        if diff <= 120:
+            await update.message.reply_text("شما پیام‌های زیادی ارسال کردید، لطفا دو دقیقه صبر کنید.")
+            return
+    db['messages'].insert_one({"user_id": user.id, "text": text, "date": datetime.datetime.utcnow()})
 
-    if text.lower().startswith("عکس "):
-        txt = text[4:]
-        await generate_image(update, txt)
+    if text.startswith("عکس "):
+        prompt = text[5:].strip()
+        await generate_image(update, prompt)
     elif "instagram.com" in text:
         await download_instagram(update, text)
     elif "spotify.com" in text:
@@ -108,85 +150,102 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "pin.it" in text or "pinterest.com" in text:
         await download_pinterest(update, text)
     else:
-        await ai_chat(update, text)
+        await chat_ai(update, text)
 
-# هوش مصنوعی
-async def ai_chat(update, text):
-    urls = [
-        f"https://starsshoptl.ir/Ai/index.php?text={text}",
-        f"https://starsshoptl.ir/Ai/index.php?model=gpt&text={text}",
-        f"https://starsshoptl.ir/Ai/index.php?model=deepseek&text={text}"
-    ]
-    for url in urls:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    data = await resp.text()
-                    if "Hey" in data:
-                        await update.message.reply_text(data)
+# --- وب سرویس ها ---
+
+async def generate_image(update: Update, prompt: str):
+    # توجه: متن باید انگلیسی باشد
+    url = f"https://v3.api-free.ir/image/?text={prompt}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("ok"):
+                    await update.message.reply_photo(photo=data["result"])
+                    return
+    await update.message.reply_text("مشکلی در ساخت تصویر رخ داد.")
+
+async def download_instagram(update: Update, url: str):
+    api = "https://pouriam.top/eyephp/instagram?url="
+    await download_media(update, api + url)
+
+async def download_spotify(update: Update, url: str):
+    api = "http://api.cactus-dev.ir/spotify.php?url="
+    async with aiohttp.ClientSession() as session:
+        async with session.get(api + url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("ok"):
+                    track = data.get("data", {}).get("track", {})
+                    if track.get("download_url"):
+                        await update.message.reply_audio(audio=track["download_url"], caption=track.get("name", ""))
                         return
-        except:
-            continue
-    await update.message.reply_text("⛔ خطا در پردازش!")
+    await update.message.reply_text("مشکلی در دانلود اسپاتیفای رخ داد.")
 
-# اینستاگرام
-async def download_instagram(update, url):
-    try:
-        api = f"https://pouriam.top/eyephp/instagram?url={url}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api) as resp:
+async def download_pinterest(update: Update, url: str):
+    api = "https://haji.s2025h.space/pin/?url="
+    async with aiohttp.ClientSession() as session:
+        async with session.get(api + url) as resp:
+            if resp.status == 200:
                 data = await resp.json()
-                for link in data.get("links", []):
-                    await update.message.reply_text(link)
-    except:
-        await update.message.reply_text("⛔ خطا در دریافت اینستاگرام!")
+                if data.get("status"):
+                    await update.message.reply_photo(photo=data["download_url"])
+                    return
+    await update.message.reply_text("مشکلی در دانلود پینترست رخ داد.")
 
-# اسپاتیفای
-async def download_spotify(update, url):
-    try:
-        api = f"http://api.cactus-dev.ir/spotify.php?url={url}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api) as resp:
+async def download_media(update: Update, url: str):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
                 data = await resp.json()
-                mp3 = data["data"]["track"]["download_url"]
-                await update.message.reply_audio(mp3)
-    except:
-        await update.message.reply_text("⛔ خطا در اسپاتیفای!")
+                links = data.get("links")
+                if links:
+                    for link in links:
+                        # ارسال اولین لینک موجود
+                        await update.message.reply_video(video=link)
+                        break
+                    return
+    await update.message.reply_text("مشکلی در دانلود اینستاگرام رخ داد.")
 
-# پینترست
-async def download_pinterest(update, url):
-    try:
-        api = f"https://haji.s2025h.space/pin/?url={url}&client_key=keyvip"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api) as resp:
-                data = await resp.json()
-                await update.message.reply_photo(data["download_url"])
-    except:
-        await update.message.reply_text("⛔ خطا در پینترست!")
+async def chat_ai(update: Update, text: str):
+    apis = [
+        "https://starsshoptl.ir/Ai/index.php?text=",
+        "https://starsshoptl.ir/Ai/index.php?model=gpt&text=",
+        "https://starsshoptl.ir/Ai/index.php?model=deepseek&text="
+    ]
+    async with aiohttp.ClientSession() as session:
+        for api in apis:
+            try:
+                async with session.get(api + text) as resp:
+                    if resp.status == 200:
+                        res_text = await resp.text()
+                        if res_text.strip():
+                            await update.message.reply_text(res_text.strip())
+                            return
+            except:
+                continue
+    await update.message.reply_text("خطایی در پاسخگویی هوش مصنوعی رخ داد.")
 
-# ساخت عکس
-async def generate_image(update, text):
-    try:
-        api = f"https://v3.api-free.ir/image/?text={text}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api) as resp:
-                data = await resp.json()
-                await update.message.reply_photo(data["result"])
-    except:
-        await update.message.reply_text("⛔ خطا در ساخت عکس!")
+# --- اجرای ربات ---
 
-# وب‌هوک
 @app.route("/", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), application.bot)
     application.update_queue.put(update)
     return "ok"
 
-# شروع
 if __name__ == "__main__":
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    application.add_handler(CommandHandler("cancel", cancel_support))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, support_message))
 
-    application.run_webhook(listen="0.0.0.0", port=10000, webhook_url=WEBHOOK_URL)
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=10000,
+        url_path=BOT_TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
+    )
     app.run(host="0.0.0.0", port=10000)
