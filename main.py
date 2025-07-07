@@ -41,6 +41,7 @@ try:
     logger.info("MongoDB connection successful")
 except Exception as e:
     logger.error(f"MongoDB connection error: {e}")
+    raise  # برای دیباگ، خطا رو پرتاب می‌کنه تا مشخص بشه
 
 # تنظیم ربات و Flask
 bot = telebot.TeleBot(TOKEN)
@@ -52,7 +53,7 @@ def check_channel_membership(user_id):
         member = bot.get_chat_member(CHANNEL_ID, user_id)
         return member.status in ["member", "administrator", "creator"]
     except Exception as e:
-        logger.error(f"Error checking membership: {e}")
+        logger.error(f"Error checking membership for user {user_id}: {e}")
         return False
 
 # تابع ایجاد کیبورد جوین
@@ -91,7 +92,7 @@ def check_spam(user_id):
             spam_collection.insert_one({"user_id": user_id, "messages": [{"time": now}]})
         return True, None
     except Exception as e:
-        logger.error(f"Spam check error: {e}")
+        logger.error(f"Spam check error for user {user_id}: {e}")
         return False, None
 
 # تابع دریافت پاسخ از وب‌سرویس چت
@@ -140,6 +141,7 @@ def download_file(url, service):
 @bot.message_handler(commands=["start"])
 def start(message):
     user_id = message.from_user.id
+    logger.info(f"Start command received from user {user_id}")
     try:
         # بررسی اتصال به MongoDB
         if not client.server_info():
@@ -152,8 +154,9 @@ def start(message):
             users_collection.insert_one({"user_id": user_id, "first_start": datetime.now()})
             try:
                 bot.send_message(ADMIN_ID, f"کاربر جدید: {message.from_user.username or message.from_user.first_name} ({user_id})")
+                logger.info(f"New user notification sent to admin for user {user_id}")
             except Exception as e:
-                logger.error(f"Error sending new user notification: {e}")
+                logger.error(f"Error sending new user notification to admin: {e}")
 
         # بررسی عضویت در کانال
         if not check_channel_membership(user_id):
@@ -166,13 +169,14 @@ def start(message):
             )
             bot.send_message(message.chat.id, welcome_msg, reply_markup=main_keyboard())
     except Exception as e:
-        logger.error(f"Start handler error: {e}")
+        logger.error(f"Start handler error for user {user_id}: {e}")
         bot.send_message(message.chat.id, "❌ خطا در پردازش درخواست. لطفاً دوباره امتحان کنید.")
 
 # هندلر بررسی جوین
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join(call):
     user_id = call.from_user.id
+    logger.info(f"Check join callback received from user {user_id}")
     try:
         if check_channel_membership(user_id):
             bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -185,7 +189,7 @@ def check_join(call):
         else:
             bot.answer_callback_query(call.id, "❌ لطفاً ابتدا در کانال عضو شوید!")
     except Exception as e:
-        logger.error(f"Check join error: {e}")
+        logger.error(f"Check join error for user {user_id}: {e}")
         bot.answer_callback_query(call.id, "❌ خطا در پردازش درخواست.")
 
 # هندلر راهنما
