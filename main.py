@@ -10,14 +10,14 @@ import logging
 import ssl
 
 # تنظیمات لاگ
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, filename='bot.log', filemode='a', format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # تنظیمات ربات
 TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
 ADMIN_ID = 5637609683
 CHANNEL_ID = "@netgoris"
-MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0&tls=true&tlsAllowInvalidCertificates=true"
+MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0&tls=true"
 WEBHOOK_URL = f"https://chatgpt-qg71.onrender.com/{TOKEN}"
 
 # وب‌سرویس‌ها
@@ -33,15 +33,15 @@ IMAGE_API = "https://v3.api-free.ir/image/?text={}"
 
 # اتصال به MongoDB
 try:
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, ssl_cert_reqs=ssl.CERT_NONE)
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, ssl=True)  # حذف ssl_cert_reqs
     db = client["telegram_bot"]
     users_collection = db["users"]
     spam_collection = db["spam"]
     client.server_info()  # تست اتصال
     logger.info("MongoDB connection successful")
 except Exception as e:
-    logger.error(f"MongoDB connection error: {e}")
-    raise  # برای دیباگ، خطا رو پرتاب می‌کنه تا مشخص بشه
+    logger.error(f"MongoDB connection error: {str(e)}")
+    raise  # برای تست، خطا رو پرت می‌کنه تا مطمئن بشیم مشکل رو می‌بینیم
 
 # تنظیم ربات و Flask
 bot = telebot.TeleBot(TOKEN)
@@ -53,7 +53,7 @@ def check_channel_membership(user_id):
         member = bot.get_chat_member(CHANNEL_ID, user_id)
         return member.status in ["member", "administrator", "creator"]
     except Exception as e:
-        logger.error(f"Error checking membership for user {user_id}: {e}")
+        logger.error(f"Error checking membership for user {user_id}: {str(e)}")
         return False
 
 # تابع ایجاد کیبورد جوین
@@ -92,7 +92,7 @@ def check_spam(user_id):
             spam_collection.insert_one({"user_id": user_id, "messages": [{"time": now}]})
         return True, None
     except Exception as e:
-        logger.error(f"Spam check error for user {user_id}: {e}")
+        logger.error(f"Spam check error for user {user_id}: {str(e)}")
         return False, None
 
 # تابع دریافت پاسخ از وب‌سرویس چت
@@ -103,7 +103,7 @@ def get_chat_response(text):
             if response.status_code == 200:
                 return response.text.strip()
         except Exception as e:
-            logger.error(f"Chat API error: {e}")
+            logger.error(f"Chat API error for text {text}: {str(e)}")
             continue
     return "❌ خطا در اتصال به سرور چت"
 
@@ -141,12 +141,11 @@ def download_file(url, service):
 @bot.message_handler(commands=["start"])
 def start(message):
     user_id = message.from_user.id
-    logger.info(f"Start command received from user {user_id}")
     try:
         # بررسی اتصال به MongoDB
         if not client.server_info():
-            logger.error("MongoDB not connected")
-            bot.send_message(message.chat.id, "❌ خطا در اتصال به دیتابیس. لطفاً دوباره امتحان کنید.")
+            logger.error("MongoDB not connected during start command")
+            bot.send_message(message.chat.id, "❌ خطا در اتصال به دیتابیس. لطفاً بعداً امتحان کنید.")
             return
 
         # ثبت کاربر جدید
@@ -154,9 +153,8 @@ def start(message):
             users_collection.insert_one({"user_id": user_id, "first_start": datetime.now()})
             try:
                 bot.send_message(ADMIN_ID, f"کاربر جدید: {message.from_user.username or message.from_user.first_name} ({user_id})")
-                logger.info(f"New user notification sent to admin for user {user_id}")
             except Exception as e:
-                logger.error(f"Error sending new user notification to admin: {e}")
+                logger.error(f"Error sending new user notification to admin {ADMIN_ID}: {str(e)}")
 
         # بررسی عضویت در کانال
         if not check_channel_membership(user_id):
@@ -169,14 +167,13 @@ def start(message):
             )
             bot.send_message(message.chat.id, welcome_msg, reply_markup=main_keyboard())
     except Exception as e:
-        logger.error(f"Start handler error for user {user_id}: {e}")
+        logger.error(f"Start handler error for user {user_id}: {str(e)}")
         bot.send_message(message.chat.id, "❌ خطا در پردازش درخواست. لطفاً دوباره امتحان کنید.")
 
 # هندلر بررسی جوین
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join(call):
     user_id = call.from_user.id
-    logger.info(f"Check join callback received from user {user_id}")
     try:
         if check_channel_membership(user_id):
             bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -189,7 +186,7 @@ def check_join(call):
         else:
             bot.answer_callback_query(call.id, "❌ لطفاً ابتدا در کانال عضو شوید!")
     except Exception as e:
-        logger.error(f"Check join error for user {user_id}: {e}")
+        logger.error(f"Check join error for user {user_id}: {str(e)}")
         bot.answer_callback_query(call.id, "❌ خطا در پردازش درخواست.")
 
 # هندلر راهنما
@@ -225,7 +222,7 @@ def final_message(call):
     try:
         bot.edit_message_text(final_text, call.message.chat.id, call.message.message_id, reply_markup=main_keyboard())
     except Exception as e:
-        logger.error(f"Final message error: {e}")
+        logger.error(f"Final message error for user {call.from_user.id}: {str(e)}")
 
 # هندلر پشتیبانی
 @bot.message_handler(func=lambda message: message.text == "📞 پشتیبانی")
@@ -234,7 +231,7 @@ def support(message):
         users_collection.update_one({"user_id": message.from_user.id}, {"$set": {"support_mode": True}}, upsert=True)
         bot.send_message(message.chat.id, "لطفاً پیام خود را برای پشتیبانی ارسال کنید یا برای خروج /cancel را بزنید.", reply_markup=ReplyKeyboardRemove())
     except Exception as e:
-        logger.error(f"Support handler error: {e}")
+        logger.error(f"Support handler error for user {message.from_user.id}: {str(e)}")
 
 # هندلر لغو پشتیبانی
 @bot.message_handler(commands=["cancel"])
@@ -243,7 +240,7 @@ def cancel_support(message):
         users_collection.update_one({"user_id": message.from_user.id}, {"$set": {"support_mode": False}})
         bot.send_message(message.chat.id, "پشتیبانی لغو شد.", reply_markup=main_keyboard())
     except Exception as e:
-        logger.error(f"Cancel support error: {e}")
+        logger.error(f"Cancel support error for user {message.from_user.id}: {str(e)}")
 
 # هندلر پاسخ ادمین
 @bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID and message.reply_to_message)
@@ -256,7 +253,7 @@ def admin_reply(message):
             bot.send_message(user_id, "پشتیبانی به پایان رسید.", reply_markup=main_keyboard())
             bot.send_message(ADMIN_ID, "پاسخ برای کاربر ارسال شد.")
     except Exception as e:
-        logger.error(f"Admin reply error: {e}")
+        logger.error(f"Admin reply error for user {user_id}: {str(e)}")
 
 # هندلر پنل ادمین
 @bot.message_handler(commands=["admin"])
@@ -267,7 +264,7 @@ def admin_panel(message):
         else:
             bot.send_message(message.chat.id, "❌ دسترسی غیرمجاز!")
     except Exception as e:
-        logger.error(f"Admin panel error: {e}")
+        logger.error(f"Admin panel error for user {message.from_user.id}: {str(e)}")
 
 # هندلر تعداد کاربران
 @bot.callback_query_handler(func=lambda call: call.data == "user_count")
@@ -279,7 +276,7 @@ def user_count(call):
         else:
             bot.answer_callback_query(call.id, "❌ دسترسی غیرمجاز!")
     except Exception as e:
-        logger.error(f"User count error: {e}")
+        logger.error(f"User count error for user {call.from_user.id}: {str(e)}")
 
 # هندلر ارسال پیام همگانی
 @bot.callback_query_handler(func=lambda call: call.data == "broadcast")
@@ -291,7 +288,7 @@ def broadcast(call):
         else:
             bot.answer_callback_query(call.id, "❌ دسترسی غیرمجاز!")
     except Exception as e:
-        logger.error(f"Broadcast error: {e}")
+        logger.error(f"Broadcast error for user {call.from_user.id}: {str(e)}")
 
 # هندلر دریافت پیام همگانی
 @bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID and users_collection.find_one({"user_id": ADMIN_ID, "broadcast_mode": True}))
@@ -306,7 +303,7 @@ def send_broadcast(message):
         users_collection.update_one({"user_id": ADMIN_ID}, {"$set": {"broadcast_mode": False}})
         bot.send_message(ADMIN_ID, "پیام همگانی ارسال شد.")
     except Exception as e:
-        logger.error(f"Send broadcast error: {e}")
+        logger.error(f"Send broadcast error for admin {ADMIN_ID}: {str(e)}")
 
 # هندلر پیام‌های متنی
 @bot.message_handler(content_types=["text"])
@@ -364,7 +361,7 @@ def handle_text(message):
             response = get_chat_response(text)
             bot.edit_message_text(response, message.chat.id, msg.message_id)
     except Exception as e:
-        logger.error(f"Text handler error: {e}")
+        logger.error(f"Text handler error for user {user_id}: {str(e)}")
         bot.send_message(message.chat.id, "❌ خطا در پردازش درخواست. لطفاً دوباره امتحان کنید.")
 
 # روت اصلی برای تست
@@ -380,7 +377,7 @@ def webhook():
         bot.process_new_updates([update])
         return "", 200
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
+        logger.error(f"Webhook error: {str(e)}")
         return "", 500
 
 # تنظیم وب‌هوک
@@ -392,7 +389,7 @@ def set_webhook():
         else:
             logger.error("Failed to set webhook")
     except Exception as e:
-        logger.error(f"Error setting webhook: {e}")
+        logger.error(f"Error setting webhook: {str(e)}")
 
 # اجرای وب‌هوک
 if __name__ == "__main__":
