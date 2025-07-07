@@ -1,3 +1,6 @@
-python-telegram-bot==20.8
-pymongo==4.6.1
-requests==2.31.0
+گpython-telegram-bot==20.3
+pymongo[srv]
+requests
+flask
+gunicorn
+python-dotenv
