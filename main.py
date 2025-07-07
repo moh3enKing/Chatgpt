@@ -146,7 +146,7 @@ async def download_spotify(update, context, url):
     if dl: await update.message.reply_audio(dl)
 
 async def download_pinterest(update, context, url):
-    res = requests.get(f"https://haji.s2025h.space/pin/?url={url}&client_key=keyvip}").json()
+    res = requests.get(f"https://haji.s2025h.space/pin/?url={url}&client_key=keyvip").json()
     if res.get("download_url"): await update.message.reply_photo(res["download_url"])
 
 async def generate_image(update, context, prompt):
