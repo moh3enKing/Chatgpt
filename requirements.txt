@@ -1,6 +1,4 @@
+python-telegram-bot[webhooks]==20.8
 flask
-python-telegram-bot
 pymongo
 requests
-dnspython
-gunicorn
