@@ -17,7 +17,7 @@ TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
 ADMIN_ID = 5637609683
 CHANNEL_ID = "@netgoris"
 MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-WEBHOOK_URL = "https://chatgpt-qg71.onrender.com/" + TOKEN
+WEBHOOK_URL = f"https://chatgpt-qg71.onrender.com/{TOKEN}"
 
 # وب‌سرویس‌ها
 CHAT_APIS = [
@@ -176,7 +176,10 @@ def guide(message):
         "3. از ارسال محتوای غیرقانونی یا توهین‌آمیز پرهیز کنید.\n\n"
         "📞 برای پشتیبانی، دکمه پشتیبانی را بزنید."
     )
-    bot.edit_message_text(guide_text, message.chat.id, message.message_id, reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🙏 ما همیشه در خدمتیم", callback_data="final_message")))
+    try:
+        bot.edit_message_text(guide_text, message.chat.id, message.message_id, reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🙏 ما همیشه در خدمتیم", callback_data="final_message")))
+    except:
+        bot.send_message(message.chat.id, guide_text, reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🙏 ما همیشه در خدمتیم", callback_data="final_message")))
 
 # هندلر پیام نهایی
 @bot.callback_query_handler(func=lambda call: call.data == "final_message")
@@ -192,7 +195,6 @@ def final_message(call):
 def support(message):
     users_collection.update_one({"user_id": message.from_user.id}, {"$set": {"support_mode": True}}, upsert=True)
     bot.send_message(message.chat.id, "لطفاً پیام خود را برای پشتیبانی ارسال کنید یا برای خروج /cancel را بزنید.", reply_markup=ReplyKeyboardRemove())
-    bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
 
 # هندلر لغو پشتیبانی
 @bot.message_handler(commands=["cancel"])
@@ -303,17 +305,22 @@ def handle_text(message):
         response = get_chat_response(text)
         bot.edit_message_text(response, message.chat.id, msg.message_id)
 
-# تنظیم وب‌هوک
-def set_webhook():
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
+# روت اصلی برای تست
+@application.route("/", methods=["GET"])
+def index():
+    return "Webhook is running!", 200
 
 # روت Flask برای وب‌هوک
-@application.route("/" + TOKEN, methods=["POST"])
+@application.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     update = telebot.types.Update.de_json(request.get_json())
     bot.process_new_updates([update])
     return "", 200
+
+# تنظیم وب‌هوک
+def set_webhook():
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
 
 # اجرای وب‌هوک
 if __name__ == "__main__":
