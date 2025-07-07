@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 import re
 import os
 import logging
-import ssl
 
 # تنظیمات لاگ
 logging.basicConfig(level=logging.INFO, filename='bot.log', filemode='a', format='%(asctime)s - %(levelname)s - %(message)s')
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
 ADMIN_ID = 5637609683
 CHANNEL_ID = "@netgoris"
-MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&tls=true"
+MONGO_URI = "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=false&tls=true"
 WEBHOOK_URL = f"https://chatgpt-qg71.onrender.com/{TOKEN}"
 
 # وب‌سرویس‌ها
@@ -37,9 +36,7 @@ try:
     client = MongoClient(
         MONGO_URI,
         serverSelectionTimeoutMS=30000,
-        ssl=True,
-        tlsAllowInvalidCertificates=True,
-        tlsCAFile=certifi.where()  # استفاده از گواهینامه‌های معتبر
+        ssl=True
     )
     db = client["telegram_bot"]
     users_collection = db["users"]
