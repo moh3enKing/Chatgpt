@@ -31,10 +31,14 @@ PINTEREST_API = "https://haji.s2025h.space/pin/?url={}&client_key=keyvip"
 IMAGE_API = "https://v3.api-free.ir/image/?text={}"
 
 # اتصال به MongoDB
-client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-db = client["telegram_bot"]
-users_collection = db["users"]
-spam_collection = db["spam"]
+try:
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    db = client["telegram_bot"]
+    users_collection = db["users"]
+    spam_collection = db["spam"]
+    client.server_info()  # تست اتصال
+except Exception as e:
+    logger.error(f"MongoDB connection error: {e}")
 
 # تنظیم ربات و Flask
 bot = telebot.TeleBot(TOKEN)
@@ -91,7 +95,8 @@ def get_chat_response(text):
             response = requests.get(api.format(text), timeout=5)
             if response.status_code == 200:
                 return response.text.strip()
-        except:
+        except Exception as e:
+            logger.error(f"Chat API error: {e}")
             continue
     return "❌ خطا در اتصال به سرور چت"
 
@@ -129,34 +134,40 @@ def download_file(url, service):
 @bot.message_handler(commands=["start"])
 def start(message):
     user_id = message.from_user.id
-    if not users_collection.find_one({"user_id": user_id}):
-        users_collection.insert_one({"user_id": user_id, "first_start": datetime.now()})
-        bot.send_message(ADMIN_ID, f"کاربر جدید: {message.from_user.username or message.from_user.first_name} ({user_id})")
-    
-    if not check_channel_membership(user_id):
-        bot.send_message(message.chat.id, "لطفاً ابتدا در کانال ما عضو شوید:", reply_markup=join_keyboard())
-    else:
-        welcome_msg = (
-            "🎉 خوش آمدید!\n"
-            "تبریک! شما با موفقیت به ربات ما پیوستید. از امکانات هوش مصنوعی و دانلودرهای ما لذت ببرید! 😊\n"
-            "برای اطلاعات بیشتر، دکمه راهنما را بزنید."
-        )
-        bot.send_message(message.chat.id, welcome_msg, reply_markup=main_keyboard())
+    try:
+        if not users_collection.find_one({"user_id": user_id}):
+            users_collection.insert_one({"user_id": user_id, "first_start": datetime.now()})
+            bot.send_message(ADMIN_ID, f"کاربر جدید: {message.from_user.username or message.from_user.first_name} ({user_id})")
+        
+        if not check_channel_membership(user_id):
+            bot.send_message(message.chat.id, "لطفاً ابتدا در کانال ما عضو شوید:", reply_markup=join_keyboard())
+        else:
+            welcome_msg = (
+                "🎉 خوش آمدید!\n"
+                "تبریک! شما با موفقیت به ربات ما پیوستید. از امکانات هوش مصنوعی و دانلودرهای ما لذت ببرید! 😊\n"
+                "برای اطلاعات بیشتر، دکمه راهنما را بزنید."
+            )
+            bot.send_message(message.chat.id, welcome_msg, reply_markup=main_keyboard())
+    except Exception as e:
+        logger.error(f"Start handler error: {e}")
 
 # هندلر بررسی جوین
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join(call):
     user_id = call.from_user.id
-    if check_channel_membership(user_id):
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        welcome_msg = (
-            "🎉 خوش آمدید!\n"
-            "تبریک! شما با موفقیت به ربات ما پیوستید. از امکانات هوش مصنوعی و دانلودرهای ما لذت ببرید! 😊\n"
-            "برای اطلاعات بیشتر، دکمه راهنما را بزنید."
-        )
-        bot.send_message(call.message.chat.id, welcome_msg, reply_markup=main_keyboard())
-    else:
-        bot.answer_callback_query(call.id, "❌ لطفاً ابتدا در کانال عضو شوید!")
+    try:
+        if check_channel_membership(user_id):
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            welcome_msg = (
+                "🎉 خوش آمدید!\n"
+                "تبریک! شما با موفقیت به ربات ما پیوستید. از امکانات هوش مصنوعی و دانلودرهای ما لذت ببرید! 😊\n"
+                "برای اطلاعات بیشتر، دکمه راهنما را بزنید."
+            )
+            bot.send_message(call.message.chat.id, welcome_msg, reply_markup=main_keyboard())
+        else:
+            bot.answer_callback_query(call.id, "❌ لطفاً ابتدا در کانال عضو شوید!")
+    except Exception as e:
+        logger.error(f"Check join error: {e}")
 
 # هندلر راهنما
 @bot.message_handler(func=lambda message: message.text == "📖 راهنما")
@@ -254,56 +265,59 @@ def send_broadcast(message):
 @bot.message_handler(content_types=["text"])
 def handle_text(message):
     user_id = message.from_user.id
-    if not check_channel_membership(user_id):
-        bot.send_message(message.chat.id, "لطفاً ابتدا در کانال ما عضو شوید:", reply_markup=join_keyboard())
-        return
+    try:
+        if not check_channel_membership(user_id):
+            bot.send_message(message.chat.id, "لطفاً ابتدا در کانال ما عضو شوید:", reply_markup=join_keyboard())
+            return
 
-    # بررسی پشتیبانی
-    if users_collection.find_one({"user_id": user_id, "support_mode": True}):
-        bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
-        return
+        # بررسی پشتیبانی
+        if users_collection.find_one({"user_id": user_id, "support_mode": True}):
+            bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
+            return
 
-    # بررسی اسپم
-    can_send, time_left = check_spam(user_id)
-    if not can_send:
-        seconds = int(time_left.total_seconds())
-        bot.send_message(message.chat.id, f"⛔ لطفاً {seconds} ثانیه صبر کنید (حداکثر ۴ پیام در ۲ دقیقه).")
-        return
+        # بررسی اسپم
+        can_send, time_left = check_spam(user_id)
+        if not can_send:
+            seconds = int(time_left.total_seconds())
+            bot.send_message(message.chat.id, f"⛔ لطفاً {seconds} ثانیه صبر کنید (حداکثر ۴ پیام در ۲ دقیقه).")
+            return
 
-    # تشخیص لینک
-    text = message.text
-    instagram_pattern = r"(https?://(www\.)?instagram\.com/(p|reel|stories)/.+)"
-    spotify_pattern = r"(https?://open\.spotify\.com/track/.+)"
-    pinterest_pattern = r"(https?://(www\.)?pinterest\.com/pin/.+)"
+        # تشخیص لینک
+        text = message.text
+        instagram_pattern = r"(https?://(www\.)?instagram\.com/(p|reel|stories)/.+)"
+        spotify_pattern = r"(https?://open\.spotify\.com/track/.+)"
+        pinterest_pattern = r"(https?://(www\.)?pinterest\.com/pin/.+)"
 
-    if re.match(instagram_pattern, text):
-        msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
-        file_url, error = download_file(text, "instagram")
-        bot.delete_message(message.chat.id, msg.message_id)
-        if error:
-            bot.send_message(message.chat.id, error)
+        if re.match(instagram_pattern, text):
+            msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
+            file_url, error = download_file(text, "instagram")
+            bot.delete_message(message.chat.id, msg.message_id)
+            if error:
+                bot.send_message(message.chat.id, error)
+            else:
+                bot.send_document(message.chat.id, file_url)
+        elif re.match(spotify_pattern, text):
+            msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
+            file_url, error = download_file(text, "spotify")
+            bot.delete_message(message.chat.id, msg.message_id)
+            if error:
+                bot.send_message(message.chat.id, error)
+            else:
+                bot.send_audio(message.chat.id, file_url)
+        elif re.match(pinterest_pattern, text):
+            msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
+            file_url, error = download_file(text, "pinterest")
+            bot.delete_message(message.chat.id, msg.message_id)
+            if error:
+                bot.send_message(message.chat.id, error)
+            else:
+                bot.send_photo(message.chat.id, file_url)
         else:
-            bot.send_document(message.chat.id, file_url)
-    elif re.match(spotify_pattern, text):
-        msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
-        file_url, error = download_file(text, "spotify")
-        bot.delete_message(message.chat.id, msg.message_id)
-        if error:
-            bot.send_message(message.chat.id, error)
-        else:
-            bot.send_audio(message.chat.id, file_url)
-    elif re.match(pinterest_pattern, text):
-        msg = bot.send_message(message.chat.id, "⏳ در حال پردازش...")
-        file_url, error = download_file(text, "pinterest")
-        bot.delete_message(message.chat.id, msg.message_id)
-        if error:
-            bot.send_message(message.chat.id, error)
-        else:
-            bot.send_photo(message.chat.id, file_url)
-    else:
-        msg = bot.send_message(message.chat.id, "…")
-        response = get_chat_response(text)
-        bot.edit_message_text(response, message.chat.id, msg.message_id)
+            msg = bot.send_message(message.chat.id, "…")
+            response = get_chat_response(text)
+            bot.edit_message_text(response, message.chat.id, msg.message_id)
+    except Exception as e:
+        logger.error(f"Text handler error: {e}")
 
 # روت اصلی برای تست
 @application.route("/", methods=["GET"])
@@ -313,16 +327,26 @@ def index():
 # روت Flask برای وب‌هوک
 @application.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
-    update = telebot.types.Update.de_json(request.get_json())
-    bot.process_new_updates([update])
-    return "", 200
+    try:
+        update = telebot.types.Update.de_json(request.get_json())
+        bot.process_new_updates([update])
+        return "", 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return "", 500
 
 # تنظیم وب‌هوک
 def set_webhook():
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
+    try:
+        bot.remove_webhook()
+        if bot.set_webhook(url=WEBHOOK_URL):
+            logger.info("Webhook set successfully")
+        else:
+            logger.error("Failed to set webhook")
+    except Exception as e:
+        logger.error(f"Error setting webhook: {e}")
 
 # اجرای وب‌هوک
 if __name__ == "__main__":
     set_webhook()
-    application.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    application.run(host="0.0.0.0", port=1000)
