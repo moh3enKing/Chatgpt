@@ -1,207 +1,176 @@
 import os
+from pyrogram import Client, filters, types
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from flask import Flask, request
-import telebot
-from telebot import types
 from pymongo import MongoClient
 import re
-import time
 
-# ===== تنظیمات =====
-TOKEN = "7881643365:AAEkvX2FvEBHHKvCLVLwBNiXXIidwNGwAzE"
-WEBHOOK_URL = f"https://chatgpt-qg71.onrender.com/{TOKEN}"
-PORT = int(os.environ.get("PORT", 1000))
-CHANNEL_ID = "@netgoris"
+# ------------------- تنظیمات اولیه -------------------
+API_ID = 123456     # از my.telegram.org بگیر
+API_HASH = "YOUR_API_HASH"
+BOT_TOKEN = "توکن شما"
 ADMIN_ID = 5637609683
-DB_PASSWORD = "p%40ssw0rd%279%27%21"
+JOIN_CHANNEL = "netgoris"
+WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
+MONGODB_URI = "mongodb+srv://mohsenfeizi1386:p%40ssw0rd%279%27%21@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
-# ===== اتصال به MongoDB =====
-client = MongoClient(
-    f"mongodb+srv://mohsenfeizi1386:{DB_PASSWORD}@cluster0.ounkvru.mongodb.net/"
-    "?retryWrites=true&w=majority&appName=Cluster0"
-)
-db = client["chat_room"]
-users = db["users"]
+# ------------------- اتصال به دیتابیس -------------------
+mongo = MongoClient(MONGODB_URI)
+db = mongo.chatroom
+users = db.users
+settings = db.settings
 
-# ===== راه‌اندازی ربات و Flask =====
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+# ------------------- ربات تلگرام -------------------
+bot = Client("anon_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# ------------------- وب هوک برای Render -------------------
 app = Flask(__name__)
 
-bot_status = {"enabled": True}
-user_messages = {}
-SPAM_LIMIT = 4
-SPAM_TIME = 120
-BANNED_NAMES = ["admin", "mod", "owner", "support", "ادمین", "مدیر", "پشتیبان"]
+@app.route("/")
+def index():
+    return "Bot Running"
 
-def is_user_in_channel(user_id):
+@app.route("/" + BOT_TOKEN, methods=["POST"])
+def webhook():
+    update = request.get_json()
+    bot.process_update(update)
+    return "OK"
+
+# ------------------- کیبوردها -------------------
+
+def join_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{JOIN_CHANNEL}")],
+        [InlineKeyboardButton("✅ عضویت انجام شد", callback_data="check_join")]
+    ])
+
+def rules_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📜 قوانین", callback_data="show_rules")]
+    ])
+
+def confirm_rules_keyboard():
+    return types.ReplyKeyboardMarkup([[types.KeyboardButton("✅ تایید قوانین")]], resize_keyboard=True)
+
+# ------------------- متن قوانین -------------------
+
+RULES_TEXT = """
+سلام کاربر عزیز 👤  
+به ربات Chat Room خوش آمدید.
+
+در اینجا می‌توانید به‌صورت ناشناس با سایر کاربران گفتگو کنید، اما رعایت قوانین الزامی است:
+
+1. استفاده فقط برای چت و سرگرمی است. تبلیغات و درخواست مالی ممنوع!
+2. ارسال گیف مجاز نیست. عکس، موسیقی و... بلامانع؛ محتوای غیر اخلاقی ممنوع!
+3. اسپم ممنوع. در صورت اسپم، سکوت ۲ دقیقه‌ای دریافت می‌کنید.
+4. احترام الزامی است. برای گزارش فحاشی یا محتوای خلاف، پیام را ریپلای و دستور «گزارش» ارسال کنید.
+
+با تایید قوانین، نام خود را (به انگلیسی) برای شروع چت ارسال کنید.
+"""
+
+# ------------------- بررسی عضویت در کانال -------------------
+
+async def is_joined(user_id):
     try:
-        status = bot.get_chat_member(CHANNEL_ID, user_id).status
-        return status in ["member", "administrator", "creator"]
+        member = await bot.get_chat_member(JOIN_CHANNEL, user_id)
+        return member.status in ["member", "creator", "administrator"]
     except:
         return False
 
-def is_english(text):
-    return bool(re.match(r'^[A-Za-z0-9 _-]+$', text))
+# ------------------- استارت -------------------
 
-def contains_graphic_characters(text):
-    return any(ord(c) > 127 for c in text)
+@bot.on_message(filters.command("start"))
+async def start(client, message):
+    user = users.find_one({"_id": message.from_user.id})
 
-def extract_sender_name(text):
-    match = re.search(r"<b>(.*?)</b>", text)
-    return match.group(1).strip() if match else None
-
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    json_str = request.get_data().decode("utf-8")
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return "OK", 200
-
-@app.route("/", methods=["GET"])
-def index():
-    return "🤖 Bot is running!"
-
-@bot.message_handler(commands=["start"])
-def start(message):
-    uid = message.from_user.id
-    user = users.find_one({"user_id": uid})
-    if user and user.get("name"):
-        bot.send_message(uid, f"🌟 خوش آمدی {user['name']}! می‌تونی چت شروع کنی.")
-        return
-
-    if not is_user_in_channel(uid):
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"))
-        markup.add(types.InlineKeyboardButton("✅ تایید عضویت", callback_data="confirm_join"))
-        bot.send_message(uid, "🔐 لطفاً ابتدا در کانال عضو شو:", reply_markup=markup)
+    if not user:
+        await message.reply("برای استفاده از ربات ابتدا در کانال عضو شوید 👇", reply_markup=join_keyboard())
     else:
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📜 قوانین", callback_data="show_rules"))
-        bot.send_message(uid, "📘 قوانین را تایید می‌کنی؟", reply_markup=markup)
+        await message.reply("👋 قبلاً ثبت‌نام کرده‌اید، خوش آمدید!\nمی‌توانید شروع به چت کنید.")
 
-@bot.callback_query_handler(func=lambda c: c.data == "confirm_join")
-def confirm_join(c):
-    uid = c.from_user.id
-    if not is_user_in_channel(uid):
-        bot.answer_callback_query(c.id, "⛔️ هنوز عضو نیستی.")
-        return
-    try: bot.delete_message(c.message.chat.id, c.message.message_id)
-    except: pass
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("📜 قوانین", callback_data="show_rules"))
-    bot.send_message(uid, "📘 قوانین را تایید می‌کنی؟", reply_markup=markup)
+# ------------------- بررسی عضویت -------------------
 
-@bot.callback_query_handler(func=lambda c: c.data == "show_rules")
-def show_rules(c):
-    uid = c.from_user.id
-    rules = (
-        f"سلام کاربر @{c.from_user.username or 'user'}\n\n"
-        "به ربات Chat Room خوش آمدید!\n\n"
-        "📌 قوانین:\n"
-        "1️⃣ تبلیغات یا درخواست پول ممنوع است\n"
-        "2️⃣ ارسال گیف ممنوع؛ عکس و موسیقی آزاد است\n"
-        "3️⃣ ضد اسپم فعال است؛ اسپم = سکوت ۲ دقیقه\n"
-        "4️⃣ احترام بگذارید؛ تخلف را با ریپلای و گزارش اطلاع دهید\n\n"
-        "دوستانت رو دعوت کن. نسخه اولیه است و آپدیت خواهد شد."
-    )
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("✅ تایید قوانین")
-    bot.edit_message_text(rules, uid, c.message.message_id)
-    bot.send_message(uid, "📌 قوانین را با دکمه زیر تایید کنید:", reply_markup=markup)
-
-@bot.message_handler(func=lambda m: m.text == "✅ تایید قوانین")
-def ask_name(m):
-    bot.send_message(m.chat.id, "📝 لطفاً یک نام انگلیسی برای خودت وارد کن:", reply_markup=types.ForceReply())
-
-@bot.message_handler(func=lambda m: m.reply_to_message and "نام انگلیسی" in m.reply_to_message.text)
-def handle_name(m):
-    name = m.text.strip()
-    if not is_english(name):
-        return bot.send_message(m.chat.id, "❌ فقط حروف و اعداد انگلیسی مجازند.")
-    if contains_graphic_characters(name):
-        return bot.send_message(m.chat.id, "⚠️ لطفاً فونت ساده استفاده کن.")
-    if any(b in name.lower() for b in BANNED_NAMES):
-        return bot.send_message(m.chat.id, "⛔️ این اسم مجاز نیست، نام دیگری انتخاب کن.")
-
-    users.update_one(
-        {"user_id": m.from_user.id},
-        {"$set": {"user_id": m.from_user.id, "name": name, "banned": False, "muted": False}},
-        upsert=True
-    )
-    bot.send_message(m.chat.id, f"✅ نام {name} ثبت شد! حالا می‌تونی چت شروع کنی.")
-
-@bot.message_handler(func=lambda m: True, content_types=["text","photo","voice","audio","video","document","animation","sticker"])
-def chat(m):
-    uid = m.from_user.id
-    user = users.find_one({"user_id": uid})
-    if not user or not user.get("name"):
-        return bot.send_message(uid, "⛔️ ابتدا ثبت‌نام کن (/start)")
-
-    if not bot_status["enabled"] and uid != ADMIN_ID:
-        return
-
-    if user.get("banned"):
-        return bot.send_message(uid, "🚫 شما بن شده‌اید.")
-
-    if m.content_type == "animation" or (m.document and m.document.mime_type == "image/gif"):
-        return bot.send_message(uid, "❌ ارسال گیف ممنوع است.")
-
-    now = time.time()
-    timestamps = user_messages.get(uid, [])
-    timestamps = [t for t in timestamps if now - t < SPAM_TIME]
-    if len(timestamps) >= SPAM_LIMIT:
-        users.update_one({"user_id": uid}, {"$set": {"muted": True}})
-        return bot.send_message(uid, "🚷 اسپم نکن! ۲ دقیقه سکوت گرفتی.")
-    user_messages[uid] = timestamps + [now]
-    if user.get("muted"):
-        return
-
-    name = user["name"]
-    content = f"<b>{name}:</b>"
-
-    if m.reply_to_message:
-        content = "💬 پاسخ به پیام بالا\n\n" + content
-
-    if m.content_type == "text":
-        content += f"\n{m.text}"
-        bot.send_message(m.chat.id, content)
-    elif m.content_type == "photo":
-        bot.send_photo(m.chat.id, m.photo[-1].file_id, caption=content)
-    elif m.content_type == "voice":
-        bot.send_voice(m.chat.id, m.voice.file_id, caption=content)
-    elif m.content_type == "audio":
-        bot.send_audio(m.chat.id, m.audio.file_id, caption=content)
-    elif m.content_type == "video":
-        bot.send_video(m.chat.id, m.video.file_id, caption=content)
-    elif m.content_type == "document":
-        bot.send_document(m.chat.id, m.document.file_id, caption=content)
-    elif m.content_type == "sticker":
-        bot.send_sticker(m.chat.id, m.sticker.file_id)
-
-@bot.message_handler(func=lambda m: m.reply_to_message and m.text.lower() in ["بن","آنبن"])
-def admin_ban(m):
-    if m.from_user.id != ADMIN_ID:
-        return
-    target = extract_sender_name(m.reply_to_message.text or m.reply_to_message.caption or "")
-    if not target:
-        return bot.reply_to(m, "❌ نام کاربر قابل شناسایی نیست.")
-    u = users.find_one({"name": target})
-    if not u:
-        return bot.reply_to(m, "❌ کاربر یافت نشد.")
-    if m.text.lower() == "بن":
-        users.update_one({"user_id": u["user_id"]}, {"$set": {"banned": True}})
-        bot.reply_to(m, f"🚫 {target} بن شد.")
+@bot.on_callback_query(filters.regex("check_join"))
+async def check_join(client, callback_query):
+    user_id = callback_query.from_user.id
+    if await is_joined(user_id):
+        await callback_query.message.delete()
+        await callback_query.message.reply("✅ اکنون قوانین را مشاهده و تایید کنید:", reply_markup=rules_keyboard())
     else:
-        users.update_one({"user_id": u["user_id"]}, {"$set": {"banned": False}})
-        bot.reply_to(m, f"✅ {target} آزاد شد.")
+        await callback_query.answer("⛔️ هنوز عضو کانال نشده‌اید.", show_alert=True)
 
-@bot.message_handler(commands=["خاموش","روشن"])
-def toggle(m):
-    if m.from_user.id != ADMIN_ID:
-        return
-    bot_status["enabled"] = (m.text == "/روشن")
-    bot.reply_to(m, "🟢 ربات فعال شد." if bot_status["enabled"] else "🔴 ربات خاموش شد.")
+# ------------------- نمایش قوانین -------------------
+
+@bot.on_callback_query(filters.regex("show_rules"))
+async def show_rules(client, callback_query):
+    await callback_query.message.edit_text(RULES_TEXT)
+    await bot.send_message(callback_query.from_user.id, "📌 لطفاً قوانین را تایید کنید.", reply_markup=confirm_rules_keyboard())
+
+# ------------------- تایید قوانین و دریافت نام -------------------
+
+@bot.on_message(filters.text("✅ تایید قوانین"))
+async def confirm_rules(client, message):
+    await message.reply("لطفاً یک نام انگلیسی برای خود وارد کنید (نباید شامل admin باشد):")
+    users.update_one({"_id": message.from_user.id}, {"$set": {"stage": "name"}}, upsert=True)
+
+@bot.on_message(filters.private & filters.text)
+async def handle_name_or_message(client, message):
+    user = users.find_one({"_id": message.from_user.id}) or {}
+    stage = user.get("stage")
+
+    if stage == "name":
+        name = message.text.strip()
+        if not re.match(r"^[A-Za-z0-9 _-]{3,20}$", name) or "admin" in name.lower():
+            await message.reply("❌ نام نامعتبر است یا شامل 'admin' می‌باشد. دوباره تلاش کنید.")
+            return
+        if re.search(r"[\u0600-\u06FF]", name):
+            await message.reply("⚠️ لطفاً فقط از حروف انگلیسی استفاده کنید.")
+            return
+
+        users.update_one({"_id": message.from_user.id}, {"$set": {"name": name, "stage": None, "banned": False}})
+        await message.reply(f"✅ نام شما با موفقیت ثبت شد: **{name}**\nاکنون می‌توانید چت را آغاز کنید.")
+
+    elif not user.get("banned", False):
+        if not user.get("name"):
+            await message.reply("⛔️ ابتدا باید قوانین را تایید و نام وارد کنید.")
+            return
+
+        if message.media and message.document and message.document.mime_type == "video/mp4":
+            await message.reply("❌ ارسال گیف ممنوع است.")
+            return
+
+        forward_text = f"👤 {user['name']}\n\n{message.text}"
+        for u in users.find({"banned": False}):
+            try:
+                await bot.send_message(u["_id"], forward_text, reply_to_message_id=None)
+            except:
+                pass
+
+# ------------------- مدیریت -------------------
+
+@bot.on_message(filters.user(ADMIN_ID) & filters.reply)
+async def admin_commands(client, message):
+    command = message.text.lower()
+    target_id = message.reply_to_message.from_user.id
+
+    if command == "بن":
+        users.update_one({"_id": target_id}, {"$set": {"banned": True}})
+        await message.reply("❌ کاربر بن شد.")
+    elif command == "آنبن":
+        users.update_one({"_id": target_id}, {"$set": {"banned": False}})
+        await message.reply("✅ کاربر آزاد شد.")
+    elif command == "خاموش":
+        settings.update_one({"_id": "bot"}, {"$set": {"on": False}}, upsert=True)
+        await message.reply("⛔️ ربات خاموش شد.")
+    elif command == "روشن":
+        settings.update_one({"_id": "bot"}, {"$set": {"on": True}}, upsert=True)
+        await message.reply("✅ ربات فعال شد.")
+
+# ------------------- راه‌اندازی -------------------
 
 if __name__ == "__main__":
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
-    app.run(host="0.0.0.0", port=PORT)
+    import logging
+    logging.basicConfig(level=logging.INFO)
+
+    # تنظیم Webhook برای Render
+    bot.run()
