@@ -27,7 +27,7 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJ
 ADMIN_ID = int(os.getenv("ADMIN_ID", 5637609683))
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1002762412959")
 PORT = int(os.getenv("PORT", 10000))
-WEBHOOK_URL = "https://chatgpt-qg71.onrender.com/" + BOT_TOKEN
+WEBHOOK_URL = f"https://chatgpt-qg71.on b.com/{BOT_TOKEN}"
 
 # Flask برای Webhook
 app = Flask(__name__)
@@ -187,23 +187,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         # چک کردن زیرمجموعه‌گیری
         if update.message.text.startswith("/start ") and len(update.message.text.split()) > 1:
-            referrer_id = int(update.message.text.split()[1])
-            if referrer_id != user_id:
-                users_collection.update_one(
-                    {"user_id": referrer_id},
-                    {"$inc": {"referral_count": 1}},
-                    upsert=True
-                )
-                user = users_collection.find_one({"user_id": referrer_id})
-                if user.get("referral_count", 0) >= 3 and not user.get("is_vip"):
+            try:
+                referrer_id = int(update.message.text.split()[1])
+                if referrer_id != user_id:
                     users_collection.update_one(
                         {"user_id": referrer_id},
-                        {"$set": {"is_vip": True}}
+                        {"$inc": {"referral_count": 1}},
+                        upsert=True
                     )
-                    await context.bot.send_message(
-                        referrer_id,
-                        "موفق شدی! 🎉 به لیست ویژه‌ها اضافه شدی و حالا می‌تونی بدون محدودیت از ربات استفاده کنی."
-                    )
+                    user = users_collection.find_one({"user_id": referrer_id})
+                    if user.get("referral_count", 0) >= 3 and not user.get("is_vip"):
+                        users_collection.update_one(
+                            {"user_id": referrer_id},
+                            {"$set": {"is_vip": True}}
+                        )
+                        await context.bot.send_message(
+                            referrer_id,
+                            "موفق شدی! 🎉 به لیست ویژه‌ها اضافه شدی و حالا می‌تونی بدون محدودیت از ربات استفاده کنی."
+                        )
+            except ValueError:
+                pass
     else:
         keyboard = [
             [InlineKeyboardButton("جوین به کانال", url="https://t.me/netgoris")],
