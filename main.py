@@ -43,14 +43,15 @@ RULES_TEXT = """
 اما قوانینی وجود دارد که باید رعایت کنید تا از ربات مسدود نشوید:  
 
 1. این ربات صرفاً برای سرگرمی، چت و دوست‌یابی است. از ربات برای تبلیغات، درخواست پول یا موارد مشابه استفاده نکنید.  
-2. ارسال گیف به‌دلیل شلوغ نشدن ربات ممنوع است. اما ارسال عکس،موسیقی و موارد مشابه آزاد است، به‌شرطی که محتوای غیراخلاقی نباشد.  
+2. ارسال گیف به‌دلیل شلوغ نشدن ربات ممنوع است. اما ارسال عکس، موسیقی و موارد مشابه آزاد است، به‌شرطی که محتوای غیراخلاقی نباشد.  
 3. ربات دارای سیستم ضداسپم است. در صورت اسپم کردن، به‌مدت ۲ دقیقه محدود خواهید شد.  
 4. به یکدیگر احترام بگذارید. اگر فحاشی یا محتوای غیراخلاقی دیدید، با ریپلای روی پیام و ارسال دستور /report به ادمین اطلاع دهید.  
 
 ربات در نسخه اولیه است و آپدیت‌های جدید در راه است.  
 دوستان خود را به ربات دعوت کنید تا تجربه بهتری از چت داشته باشید.  
 موفق باشید!
- hint: !"""
+"""
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = users_collection.find_one({"user_id": user_id})
@@ -134,10 +135,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "message_id": update.message.message_id,
         "chat_id": update.message.chat_id
     })
-    recent_messages = messages_collection.find({
+    recent_messages = messages_collection.count_documents({
         "user_id": user_id,
         "timestamp": {"$gte": now - timedelta(seconds=10)}
-    }).count()
+    })
     if recent_messages > 5:
         users_collection.update_one(
             {"user_id": user_id},
@@ -227,6 +228,7 @@ async def clean_old_messages(context: ContextTypes.DEFAULT_TYPE):
 async def main():
     app = Application.builder().token(TOKEN).build()
 
+    # اضافه کردن هندلرها
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(confirm_start, pattern="confirm_start"))
     app.add_handler(CallbackQueryHandler(show_rules, pattern="show_rules"))
@@ -237,18 +239,22 @@ async def main():
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("toggle", toggle_bot))
 
+    # تمیز کردن پیام‌های قدیمی
     app.job_queue.run_repeating(clean_old_messages, interval=3600, first=10)
 
+    # تنظیم وب‌هوک
+    logger.info(f"Setting webhook to {WEBHOOK_URL}/{TOKEN}")
     await app.bot.set_webhook(f"{WEBHOOK_URL}/{TOKEN}")
+
+    # شروع ربات با وب‌هوک
     async with app:
         await app.start()
-        await app.updater.start_webhook(
+        await app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
-            url_path=TOKEN,
+            url_path=f"/{TOKEN}",
             webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
         )
-        await app.run_forever()
 
 if __name__ == "__main__":
     asyncio.run(main())
