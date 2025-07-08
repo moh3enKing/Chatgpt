@@ -34,6 +34,7 @@ banned_users_collection = db.banned_users
 bot_enabled = True
 user_spam_tracker = {}
 user_last_message_time = {}
+user_silence_until = {}
 
 # Logging setup
 
@@ -47,6 +48,10 @@ logger = logging.getLogger(**name**)
 
 WAITING_FOR_NAME = “waiting_for_name”
 ACTIVE = “active”
+
+# Banned names
+
+BANNED_NAMES = [“admin”, “administrator”, “mod”, “moderator”, “owner”, “root”, “bot”, “support”, “help”]
 
 class ChatBot:
 def **init**(self):
@@ -77,6 +82,15 @@ async def is_user_banned(self, user_id: int) -> bool:
     result = await banned_users_collection.find_one({"user_id": user_id})
     return result is not None
 
+async def is_user_silenced(self, user_id: int) -> bool:
+    """Check if user is silenced"""
+    if user_id in user_silence_until:
+        if datetime.now() < user_silence_until[user_id]:
+            return True
+        else:
+            del user_silence_until[user_id]
+    return False
+
 async def get_user_data(self, user_id: int) -> Optional[Dict]:
     """Get user data from database"""
     return await users_collection.find_one({"user_id": user_id})
@@ -93,6 +107,26 @@ async def is_name_taken(self, name: str, user_id: int) -> bool:
     """Check if name is already taken by another user"""
     result = await users_collection.find_one({"name": name, "user_id": {"$ne": user_id}})
     return result is not None
+
+def is_valid_name(self, name: str) -> tuple:
+    """Check if name is valid (English only, min 3 chars, not banned)"""
+    # Check length
+    if len(name) < 3:
+        return False, "نام باید حداقل 3 حرف باشد"
+    
+    # Check if English only
+    if not re.match(r'^[a-zA-Z0-9_]+$', name):
+        return False, "نام باید فقط شامل حروف انگلیسی باشد"
+    
+    # Check banned names
+    if name.lower() in BANNED_NAMES:
+        return False, "این نام مجاز نیست"
+    
+    # Check for admin-like names
+    if "admin" in name.lower() or "mod" in name.lower():
+        return False, "این نام مجاز نیست"
+    
+    return True, "نام معتبر است"
 
 async def check_spam(self, user_id: int) -> bool:
     """Check if user is spamming (more than 3 messages per second)"""
@@ -112,6 +146,8 @@ async def check_spam(self, user_id: int) -> bool:
     
     # Check if more than 3 messages in 1 second
     if len(user_spam_tracker[user_id]) > 3:
+        # Silence user for 2 minutes
+        user_silence_until[user_id] = current_time + timedelta(minutes=2)
         return True
     
     return False
@@ -146,7 +182,8 @@ async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_data and user_data.get("state") == ACTIVE:
         await update.message.reply_text(
             f"سلام {user_data.get('name')}! 👋\n"
-            "شما قبلاً در ربات ثبت‌نام کرده‌اید. می‌توانید پیام‌های خود را ارسال کنید."
+            "شما قبلاً در ربات ثبت‌نام کرده‌اید و خوش آمدید.\n"
+            "می‌توانید پیام‌های خود را ارسال کنید."
         )
         return
     
@@ -155,30 +192,6 @@ async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_rules(self, chat_id: int, user_id: int):
     """Show rules to user"""
-    rules_text = f"""سلام کاربر @{user_id}
-```
-
-به ربات chat room خوش آمدین
-
-اینجا شما آزاد هستید که به صورت ناشناس با دیگر اعضای گروه در ارتباط باشید و چت کنید و با هم آشنا بشید
-
-اما قوانینی وجود دارد که باید رعایت کنید تا از ربات مسدود نشوید
-
-1» این ربات صرفاً برای سرگرمی و چت کردن هست و دوست یابی
-پس از ربات برای تبلیغات و درخواست پول و غیره استفاده نکنید
-
-2» ارسال گیف در ربات به علت شلوغ نشدن ربات ممنوعه
-اما ارسال عکس و موسیقی و غیره آزاده اما محتوای غیر اخلاقی ارسال نکنید
-
-3» ربات دارای ضد اسپم است پس ربات رو اسپم نکنید که سکوت میخورید به مدت 2 دقیقه
-
-4» به یکدیگر احترام بذارید اگه فحاشی یا محتوای غیر اخلاقی دیدید با ریپلای روی پیام و ارسال دستور ( گزارش) به ادمین اطلاع بدید
-
-ربات در نسخه اولیه هست اپدیت های جدید تو راهه
-دوستان خودتون رو به ربات معرفی کنید تا تجربه بهتری در چت کردن داشته باشید
-موفق باشید”””
-
-```
     keyboard = [
         [InlineKeyboardButton("🔷 قوانین", callback_data="show_rules")],
         [InlineKeyboardButton("✅ تایید قوانین", callback_data="accept_rules")]
@@ -233,8 +246,11 @@ async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TY
     
     elif query.data == "accept_rules":
         await query.edit_message_text(
-            "لطفاً نام خود را در ربات ارسال کنید:\n\n"
-            "⚠️ توجه: از فونت‌های ساده استفاده کنید و از فونت‌های گرافیکی خودداری کنید."
+            "لطفاً نام انگلیسی خود را در ربات ارسال کنید:\n\n"
+            "⚠️ توجه: \n"
+            "- نام باید حداقل 3 حرف باشد\n"
+            "- فقط از حروف انگلیسی استفاده کنید\n"
+            "- اسم‌های مدیریتی مجاز نیست"
         )
         await self.save_user_data(user_id, {"state": WAITING_FOR_NAME})
     
@@ -268,6 +284,11 @@ async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ شما از ربات مسدود شده‌اید.")
         return
     
+    # Check if user is silenced
+    if await self.is_user_silenced(user_id):
+        await update.message.reply_text("🔇 شما به دلیل اسپم تا 2 دقیقه سکوت شده‌اید.")
+        return
+    
     # Check spam
     if await self.check_spam(user_id):
         await update.message.reply_text("⚠️ شما به دلیل ارسال پیام‌های زیاد، برای 2 دقیقه سکوت شدید.")
@@ -293,11 +314,12 @@ async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYP
     
     # Handle name input
     if user_data and user_data.get("state") == WAITING_FOR_NAME:
-        # Check for fancy fonts
-        if self.has_fancy_fonts(message_text):
+        # Validate name
+        is_valid, error_message = self.is_valid_name(message_text)
+        if not is_valid:
             await update.message.reply_text(
-                "⚠️ لطفاً از فونت‌های ساده استفاده کنید و از فونت‌های گرافیکی خودداری کنید.\n"
-                "نام خود را مجدداً ارسال کنید:"
+                f"❌ {error_message}\n"
+                "لطفاً نام معتبر دیگری انتخاب کنید:"
             )
             return
         
@@ -341,6 +363,11 @@ async def handle_media(self, update: Update, context: ContextTypes.DEFAULT_TYPE)
     if await self.is_user_banned(user_id):
         return
     
+    # Check if user is silenced
+    if await self.is_user_silenced(user_id):
+        await update.message.reply_text("🔇 شما به دلیل اسپم تا 2 دقیقه سکوت شده‌اید.")
+        return
+    
     # Check spam
     if await self.check_spam(user_id):
         await update.message.reply_text("⚠️ شما به دلیل ارسال پیام‌های زیاد، برای 2 دقیقه سکوت شدید.")
@@ -361,49 +388,42 @@ async def handle_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE
         reported_message = update.message.reply_to_message
         reporter_id = update.effective_user.id
         
-        # Forward the reported message to admin
+        # Send report to admin with the original message
         await self.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"🚨 گزارش جدید از کاربر {reporter_id}:\n\n"
-                 f"پیام گزارش شده:",
-            reply_to_message_id=reported_message.message_id if reported_message else None
+            text=f"🚨 گزارش جدید از کاربر {reporter_id}"
         )
         
-        # If there's a replied message, forward it
-        if reported_message:
+        # Forward the reported message to admin
+        try:
             await self.bot.forward_message(
                 chat_id=ADMIN_ID,
                 from_chat_id=update.effective_chat.id,
                 message_id=reported_message.message_id
             )
+        except:
+            await self.bot.send_message(
+                chat_id=ADMIN_ID,
+                text="پیام گزارش شده قابل فوروارد نیست."
+            )
         
         await update.message.reply_text("✅ گزارش شما ارسال شد.")
-
-def has_fancy_fonts(self, text: str) -> bool:
-    """Check if text contains fancy fonts"""
-    # Check for non-standard Unicode characters that might be fancy fonts
-    fancy_ranges = [
-        (0x1D400, 0x1D7FF),  # Mathematical symbols
-        (0x1F100, 0x1F1FF),  # Enclosed characters
-        (0x2100, 0x214F),    # Letterlike symbols
-        (0x1D00, 0x1D7F),    # Phonetic extensions
-    ]
-    
-    for char in text:
-        char_code = ord(char)
-        for start, end in fancy_ranges:
-            if start <= char_code <= end:
-                return True
-    return False
 
 async def broadcast_message(self, update: Update, sender_data: Dict):
     """Broadcast text message to all active users"""
     message_text = update.message.text
     sender_name = sender_data.get("name", "ناشناس")
+    sender_id = update.effective_user.id
     
-    # Get all active users
-    async for user in users_collection.find({"state": ACTIVE}):
-        if user["user_id"] != update.effective_user.id:
+    # Show admin as Owner
+    if sender_id == ADMIN_ID:
+        sender_name = "Owner"
+    
+    # Get all active users (limit to reduce bandwidth)
+    cursor = users_collection.find({"state": ACTIVE}).limit(100)
+    
+    async for user in cursor:
+        if user["user_id"] != sender_id:
             try:
                 await self.bot.send_message(
                     chat_id=user["user_id"],
@@ -416,14 +436,22 @@ async def broadcast_message(self, update: Update, sender_data: Dict):
 async def broadcast_media(self, update: Update, sender_data: Dict):
     """Broadcast media message to all active users"""
     sender_name = sender_data.get("name", "ناشناس")
+    sender_id = update.effective_user.id
+    
+    # Show admin as Owner
+    if sender_id == ADMIN_ID:
+        sender_name = "Owner"
+    
     caption = f"👤 {sender_name}"
     
     if update.message.caption:
         caption += f":\n{update.message.caption}"
     
-    # Get all active users
-    async for user in users_collection.find({"state": ACTIVE}):
-        if user["user_id"] != update.effective_user.id:
+    # Get all active users (limit to reduce bandwidth)
+    cursor = users_collection.find({"state": ACTIVE}).limit(100)
+    
+    async for user in cursor:
+        if user["user_id"] != sender_id:
             try:
                 if update.message.photo:
                     await self.bot.send_photo(
