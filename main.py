@@ -197,6 +197,6 @@ def toggle(m):
         bot_status["enabled"] = True
         bot.reply_to(m, "🟢 ربات فعال شد.")
 
-bot.remove_webhook(
+bot.remove_webhook()
 # شروع ربات
 bot.infinity_polling()
