@@ -1,169 +1,531 @@
 import os
+import time
 import re
-from flask import Flask, request
-from pyrogram import Client, filters, types
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+import threading
+import requests
 from pymongo import MongoClient
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes,
+)
+from telegram.error import TelegramError
+from flask import Flask, request
+import logging
 
-# تنظیمات اصلی ربات
-API_ID = 2040
-API_HASH = "b18441a1ff607e10a989891a5462e627"
-BOT_TOKEN = "7881643365:AAEkvX2FvEBHHKvCLVLwBNiXXIidwNGwAzE"
-ADMIN_ID = 5637609683
-JOIN_CHANNEL = "netgoris"
-WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
+# تنظیمات لاگ
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# اتصال به MongoDB Atlas
-mongo = MongoClient("mongodb+srv://mohsenfeizi1386:p%40ssw0rd%279%27%21@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
-db = mongo.chatroom
-users = db.users
-settings = db.settings
+# تنظیمات محیطی
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://mohsenfeizi1386:RIHPhDJPhd9aNJvC@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+ADMIN_ID = int(os.getenv("ADMIN_ID", 5637609683))
+CHANNEL_ID = os.getenv("CHANNEL_ID", "-1002762412959")
+PORT = int(os.getenv("PORT", 10000))
+WEBHOOK_URL = "https://chatgpt-qg71.onrender.com/" + BOT_TOKEN
 
-# راه‌اندازی Pyrogram Client
-bot = Client("anon_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# راه‌اندازی Flask برای Webhook Render
+# Flask برای Webhook
 app = Flask(__name__)
 
-@app.route("/")
-def home():
-    return "✅ Bot is running!"
+# اتصال به MongoDB
+client = MongoClient(MONGO_URI)
+db = client["bot_db"]
+users_collection = db["users"]
+support_chats_collection = db["support_chats"]
 
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    bot.process_update(request.get_json(force=True))
-    return "OK"
+# ذخیره پیام‌ها در رم
+messages = {}
 
-# کیبوردهای ربات
-def join_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{JOIN_CHANNEL}")],
-        [InlineKeyboardButton("✅ عضویت انجام شد", callback_data="check_join")]
-    ])
+# تابع پاک‌سازی پیام‌های قدیمی (۲۴ ساعته)
+def cleanup_messages():
+    while True:
+        current_time = time.time()
+        for user_id in list(messages.keys()):
+            messages[user_id] = [
+                msg for msg in messages[user_id]
+                if current_time - msg["timestamp"] < 24 * 3600
+            ]
+            if not messages[user_id]:
+                del messages[user_id]
+        time.sleep(3600)  # هر ساعت چک کن
 
-def rules_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📜 قوانین", callback_data="show_rules")]
-    ])
+# شروع ترد پاک‌سازی
+threading.Thread(target=cleanup_messages, daemon=True).start()
 
-def confirm_rules_keyboard():
-    return types.ReplyKeyboardMarkup([[types.KeyboardButton("✅ تایید قوانین")]], resize_keyboard=True)
-
-RULES_TEXT = """
-سلام کاربر عزیز 👤  
-به ربات Chat Room خوش آمدید.
-
-در اینجا می‌توانید به‌صورت ناشناس با سایر کاربران گفتگو کنید، اما رعایت قوانین الزامی است:
-
-1. استفاده فقط برای چت و سرگرمی است. تبلیغات و درخواست مالی ممنوع!
-2. ارسال گیف مجاز نیست. عکس، موسیقی و... بلامانع؛ محتوای غیر اخلاقی ممنوع!
-3. اسپم ممنوع. در صورت اسپم، سکوت ۲ دقیقه‌ای دریافت می‌کنید.
-4. احترام الزامی است. برای گزارش فحاشی یا محتوای خلاف، پیام را ریپلای و دستور «گزارش» ارسال کنید.
-
-با تایید قوانین، نام خود را (به انگلیسی) برای شروع چت ارسال کنید.
-"""
-
-# چک عضویت کاربر
-async def is_joined(user_id):
+# چک کردن عضویت در کانال
+async def check_membership(update: Update, user_id: int, context: ContextTypes.DEFAULT_TYPE):
     try:
-        member = await bot.get_chat_member(JOIN_CHANNEL, user_id)
+        member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
         return member.status in ["member", "administrator", "creator"]
-    except:
+    except TelegramError:
         return False
 
-# /start
-@bot.on_message(filters.command("start"))
-async def start(client, message):
-    user = users.find_one({"_id": message.from_user.id})
-    if not user:
-        await message.reply("برای استفاده از ربات ابتدا در کانال عضو شوید 👇", reply_markup=join_keyboard())
+# چک کردن ضداسپم
+async def check_spam(user_id: int):
+    user = users_collection.find_one({"user_id": user_id})
+    if not user or user.get("is_vip"):
+        return True
+    current_time = time.time()
+    last_time = user.get("last_message_time", 0)
+    message_count = user.get("message_count_spam", 0)
+    if current_time - last_time < 5:  # ۵ ثانیه
+        message_count += 1
+        if message_count >= 3:
+            users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"last_message_time": current_time + 120, "message_count_spam": 0}}
+            )
+            return False
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"message_count_spam": message_count, "last_message_time": current_time}}
+        )
     else:
-        await message.reply("👋 قبلاً ثبت‌نام کرده‌اید، خوش آمدید!\nاکنون می‌توانید شروع به چت کنید.")
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"message_count_spam": 1, "last_message_time": current_time}}
+        )
+    return True
 
-# بررسی عضویت
-@bot.on_callback_query(filters.regex("check_join"))
-async def check_join(client, callback_query):
-    if await is_joined(callback_query.from_user.id):
-        await callback_query.message.delete()
-        await callback_query.message.reply("✅ اکنون قوانین را مشاهده و تایید کنید:", reply_markup=rules_keyboard())
+# چک کردن محدودیت‌ها
+async def check_limits(user_id: int, limit_type: str):
+    user = users_collection.find_one({"user_id": user_id})
+    if not user or user.get("is_vip"):
+        return True
+    current_time = time.time()
+    reset_time = user.get("reset_time", 0)
+    if current_time - reset_time > 24 * 3600:
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"message_count": 0, "download_requests": 0, "image_requests": 0, "reset_time": current_time}}
+        )
+        user = users_collection.find_one({"user_id": user_id})
+    if limit_type == "chat" and user.get("message_count", 0) >= 200:
+        return False
+    if limit_type == "download" and user.get("download_requests", 0) >= 5:
+        return False
+    if limit_type == "image" and user.get("image_requests", 0) >= 3:
+        return False
+    return True
+
+# تابع وب‌سرویس‌های چت
+async def get_chat_response(user_id: int, text: str):
+    context = messages.get(user_id, [])[-5:]  # ۵ پیام آخر
+    context_text = "\n".join([f"{'Bot' if msg['is_bot'] else 'User'}: {msg['text']}" for msg in context])
+    full_text = f"Context:\n{context_text}\nMessage: {text}" if context else text
+    services = [
+        f"https://starsshoptl.ir/Ai/index.php?text={full_text}",
+        f"https://starsshoptl.ir/Ai/index.php?model=gpt&text={full_text}",
+        f"https://starsshoptl.ir/Ai/index.php?model=deepseek&text={full_text}",
+    ]
+    for service in services:
+        try:
+            response = requests.get(service, timeout=10)
+            if response.status_code == 200:
+                return response.text.strip()
+        except:
+            continue
+    return None
+
+# تابع دانلودرها
+async def download_file(url: str, service_type: str):
+    if service_type == "instagram":
+        response = requests.get(f"https://pouriam.top/eyephp/instagram?url={url}", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("links", [])[0] if data.get("links") else None
+    elif service_type == "spotify":
+        response = requests.get(f"http://api.cactus-dev.ir/spotify.php?url={url}", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("data", {}).get("track", {}).get("download_url")
+    elif service_type == "pinterest":
+        response = requests.get(f"https://haji.s2025h.space/pin/?url={url}&client_key=keyvip", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("download_url")
+    return None
+
+# تابع ساخت عکس
+async def generate_image(text: str):
+    if not re.match(r"^[a-zA-Z\s]+$", text):
+        return None, "لطفاً فقط متن انگلیسی وارد کنید!"
+    response = requests.get(f"https://v3.api-free.ir/image/?text={text}", timeout=10)
+    if response.status_code == 200:
+        data = response.json()
+        return data.get("result"), None
+    return None, "خطا در تولید عکس!"
+
+# دستور /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "کاربر"
+    if await check_membership(update, user_id, context):
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"is_member": True, "joined_at": time.time()}},
+            upsert=True
+        )
+        # اطلاع به ادمین
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"کاربر جدید: @{username} (ID: {user_id})\nزمان: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        keyboard = [
+            [InlineKeyboardButton("راهنما", callback_data="help")],
+            [InlineKeyboardButton("پشتیبانی", callback_data="support")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            f"خوش اومدی @{username}! 🎉\nحالا می‌تونی از قابلیت‌های ربات استفاده کنی.\nبرای اطلاعات بیشتر، دکمه راهنما رو بزن.",
+            reply_markup=reply_markup
+        )
+        # چک کردن زیرمجموعه‌گیری
+        if update.message.text.startswith("/start ") and len(update.message.text.split()) > 1:
+            referrer_id = int(update.message.text.split()[1])
+            if referrer_id != user_id:
+                users_collection.update_one(
+                    {"user_id": referrer_id},
+                    {"$inc": {"referral_count": 1}},
+                    upsert=True
+                )
+                user = users_collection.find_one({"user_id": referrer_id})
+                if user.get("referral_count", 0) >= 3 and not user.get("is_vip"):
+                    users_collection.update_one(
+                        {"user_id": referrer_id},
+                        {"$set": {"is_vip": True}}
+                    )
+                    await context.bot.send_message(
+                        referrer_id,
+                        "موفق شدی! 🎉 به لیست ویژه‌ها اضافه شدی و حالا می‌تونی بدون محدودیت از ربات استفاده کنی."
+                    )
     else:
-        await callback_query.answer("⛔️ هنوز عضو کانال نشده‌اید.", show_alert=True)
+        keyboard = [
+            [InlineKeyboardButton("جوین به کانال", url="https://t.me/netgoris")],
+            [InlineKeyboardButton("تأیید عضویت", callback_data="check_membership")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "برای استفاده از ربات، باید عضو کانال @netgoris باشید! 👇",
+            reply_markup=reply_markup
+        )
 
-# نمایش قوانین
-@bot.on_callback_query(filters.regex("show_rules"))
-async def show_rules(client, callback_query):
-    await callback_query.message.edit_text(RULES_TEXT)
-    await bot.send_message(callback_query.from_user.id, "📌 لطفاً قوانین را تایید کنید.", reply_markup=confirm_rules_keyboard())
+# دکمه‌های شیشه‌ای
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    username = query.from_user.username or "کاربر"
+    if query.data == "check_membership":
+        if await check_membership(update, user_id, context):
+            await query.message.delete()
+            users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"is_member": True, "joined_at": time.time()}},
+                upsert=True
+            )
+            # اطلاع به ادمین
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"کاربر جدید: @{username} (ID: {user_id})\nزمان: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            keyboard = [
+                [InlineKeyboardButton("راهنما", callback_data="help")],
+                [InlineKeyboardButton("پشتیبانی", callback_data="support")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await context.bot.send_message(
+                user_id,
+                f"خوش اومدی @{username}! 🎉\nحالا می‌تونی از قابلیت‌های ربات استفاده کنی.\nبرای اطلاعات بیشتر، دکمه راهنما رو بزن.",
+                reply_markup=reply_markup
+            )
+        else:
+            await query.message.reply_text("لطفاً اول به کانال @netgoris ملحق بشید!")
+    elif query.data == "help":
+        keyboard = [
+            [InlineKeyboardButton("زیرمجموعه‌گیری", callback_data="referral")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.edit_text(
+            f"""سلام کاربر @{username}
+امیدوارم از ربات راضی باشید!
 
-# تایید قوانین
-@bot.on_message(filters.private & filters.text & filters.regex("^✅ تایید قوانین$"))
-async def confirm_rules(client, message):
-    await message.reply("لطفاً یک نام انگلیسی برای خود وارد کنید (نباید شامل 'admin' باشد):")
-    users.update_one({"_id": message.from_user.id}, {"$set": {"stage": "name"}}, upsert=True)
+📖 راهنمای استفاده از ربات:
+1. 💬 چت هوش مصنوعی: هر متنی بفرستید، ربات با هوش مصنوعی جواب می‌ده.
+2. 📹 دانلود از اینستاگرام: لینک پست یا ریلز بفرستید تا ویدیو/عکس براتون ارسال بشه.
+3. 🎵 دانلود از اسپاتیفای: لینک آهنگ بفرستید تا فایل MP3 براتون بیاد.
+4. 🖼 دانلود از پینترست: لینک پین بفرستید تا عکس براتون ارسال بشه.
+5. 🖌 ساخت عکس: از دستور /image <متن انگلیسی> (مثل /image flower) استفاده کنید.
+6. 📞 پشتیبانی: با دکمه پشتیبانی، می‌تونید با ادمین چت کنید.
 
-# دریافت نام یا چت
-@bot.on_message(filters.private & filters.text)
-async def name_or_chat(client, message):
-    user = users.find_one({"_id": message.from_user.id}) or {}
-    stage = user.get("stage")
+📜 قوانین:
+- اسپم نکنید (بیش از ۳ پیام پشت‌سرهم ممنوع).
+- محتوای غیرمجاز نفرستید، وگرنه بن می‌شید.
+- فقط لینک‌های معتبر اینستاگرام، اسپاتیفای، یا پینترست بفرستید.
+- برای ساخت عکس، فقط متن انگلیسی وارد کنید.
 
-    if stage == "name":
-        name = message.text.strip()
-        if not re.match(r"^[A-Za-z0-9 _-]{3,20}$", name) or "admin" in name.lower():
-            await message.reply("❌ نام نامعتبر است یا شامل 'admin' می‌باشد.")
-            return
-        if re.search(r"[\u0600-\u06FF]", name):
-            await message.reply("❗️ لطفاً فقط از حروف انگلیسی استفاده کنید.")
-            return
+⚠️ محدودیت‌ها:
+- چت: ۲۰۰ پیام در ۲۴ ساعت
+- دانلود (اینستاگرام، اسپاتیفای، پینترست): ۵ درخواست در ۲۴ ساعت
+- ساخت عکس: ۳ درخواست در ۲۴ ساعت
+* کاربران ویژه هیچ محدودیتی ندارن.
 
-        users.update_one({"_id": message.from_user.id}, {"$set": {"name": name, "stage": None, "banned": False}})
-        await message.reply(f"✅ نام شما با موفقیت ثبت شد: {name}\nاکنون می‌توانید شروع به چت کنید.")
+🎉 اگه می‌خوای از ربات بدون محدودیت استفاده کنی، روی دکمه زیر بزن و زیرمجموعه جمع کن!""",
+            reply_markup=reply_markup
+        )
+    elif query.data == "support":
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"in_support_mode": True}},
+            upsert=True
+        )
+        support_chats_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"in_support_mode": True}},
+            upsert=True
+        )
+        await query.message.reply_text("لطفاً پیام خودتون رو بنویسید تا به ادمین منتقل بشه.")
+    elif query.data == "referral":
+        referral_link = f"https://t.me/{context.bot.username}?start={user_id}"
+        keyboard = [
+            [InlineKeyboardButton("اشتراک‌گذاری ربات", url=f"https://t.me/share/url?url={referral_link}&text=سلام دوست گلم\nمن نیاز به امتیاز دارم ممنون میشم با لینک من وارد ربات بشی تا بتونم بدون محدودیت از ربات استفاده کنم\nراستی خودت هم می‌تونی از قابلیت‌های خفن ربات استفاده کنی\nتستش ضرر نداره 😎")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(
+            f"""🗣 با دعوت دوستانت، درآمد و امتیاز بگیر! 🎉
+هر کسی که با لینک دعوت تو به ربات ملحق بشه،
+تو امتیاز می‌گیری و به امکانات ویژه‌تری دسترسی پیدا می‌کنی! 🚀✨
+
+🔗 لینک اختصاصی دعوتت رو به دوستات بفرست
+🎁 هر دعوت = جوایز و مزایای بیشتر برای تو
+💡 راحت، سریع و کاملاً رایگان""",
+            reply_markup=reply_markup
+        )
+
+# دستور /image
+async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not await check_membership(update, user_id, context):
+        await update.message.reply_text("لطفاً اول به کانال @netgoris ملحق بشید!")
+        return
+    if not await check_spam(user_id):
+        await update.message.reply_text("لطفاً ۲ دقیقه صبر کنید!")
+        return
+    if not await check_limits(user_id, "image"):
+        await update.message.reply_text("شما به حد مجاز ساخت عکس (۳ درخواست در ۲۴ ساعت) رسیدید!")
+        return
+    if len(context.args) == 0:
+        await update.message.reply_text("لطفاً یه متن انگلیسی وارد کنید! مثال: /image flower")
+        return
+    text = " ".join(context.args)
+    processing_msg = await update.message.reply_text("در حال پردازش...")
+    image_url, error = await generate_image(text)
+    if error:
+        await processing_msg.delete()
+        await update.message.reply_text(error)
+        return
+    if image_url:
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$inc": {"image_requests": 1}}
+        )
+        await processing_msg.delete()
+        await update.message.reply_photo(image_url)
     else:
-        if user.get("banned"):
+        await processing_msg.delete()
+        await update.message.reply_text("خطا در تولید عکس!")
+
+# مدیریت پیام‌ها
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "کاربر"
+    text = update.message.text
+
+    # چک کردن بن
+    user = users_collection.find_one({"user_id": user_id})
+    if user and user.get("is_banned"):
+        await update.message.reply_text("شما بن شدید و نمی‌تونید از ربات استفاده کنید!")
+        return
+
+    # چک کردن عضویت
+    if not await check_membership(update, user_id, context):
+        keyboard = [
+            [InlineKeyboardButton("جوین به کانال", url="https://t.me/netgoris")],
+            [InlineKeyboardButton("تأیید عضویت", callback_data="check_membership")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "برای استفاده از ربات، باید عضو کانال @netgoris باشید! 👇",
+            reply_markup=reply_markup
+        )
+        return
+
+    # چک کردن ضداسپم
+    if not await check_spam(user_id):
+        await update.message.reply_text("لطفاً ۲ دقیقه صبر کنید!")
+        return
+
+    # چک کردن حالت پشتیبانی
+    support_chat = support_chats_collection.find_one({"user_id": user_id})
+    if support_chat and support_chat.get("in_support_mode"):
+        await context.bot.forward_message(ADMIN_ID, user_id, update.message.message_id)
+        support_chats_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"last_message_id": update.message.message_id}}
+        )
+        if user_id not in messages:
+            messages[user_id] = []
+        messages[user_id].append({"text": text, "timestamp": time.time(), "is_bot": False})
+        return
+
+    # چک کردن لینک‌های دانلودر
+    instagram_regex = r"(https?:\/\/(?:www\.)?instagram\.com\/.*)"
+    spotify_regex = r"(https?:\/\/(?:open\.)?spotify\.com\/.*)"
+    pinterest_regex = r"(https?:\/\/(?:www\.)?pinterest\.com\/.*)"
+    if re.match(instagram_regex, text) or re.match(spotify_regex, text) or re.match(pinterest_regex, text):
+        if not await check_limits(user_id, "download"):
+            await update.message.reply_text("شما به حد مجاز دانلود (۵ درخواست در ۲۴ ساعت) رسیدید!")
             return
-        if not user.get("name"):
-            await message.reply("⛔️ ابتدا باید قوانین را تایید و نام وارد کنید.")
-            return
+        processing_msg = await update.message.reply_text("در حال پردازش...")
+        file_url = None
+        if re.match(instagram_regex, text):
+            file_url = await download_file(text, "instagram")
+            if file_url and file_url.endswith((".mp4", ".m3u8")):
+                await processing_msg.delete()
+                await update.message.reply_video(file_url)
+            elif file_url:
+                await processing_msg.delete()
+                await update.message.reply_photo(file_url)
+        elif re.match(spotify_regex, text):
+            file_url = await download_file(text, "spotify")
+            if file_url:
+                await processing_msg.delete()
+                await update.message.reply_audio(file_url)
+        elif re.match(pinterest_regex, text):
+            file_url = await download_file(text, "pinterest")
+            if file_url:
+                await processing_msg.delete()
+                await update.message.reply_photo(file_url)
+        if file_url:
+            users_collection.update_one(
+                {"user_id": user_id},
+                {"$inc": {"download_requests": 1}}
+            )
+        else:
+            await processing_msg.delete()
+            await update.message.reply_text("خطا در دانلود فایل! لینک معتبر نیست.")
+        return
 
-        if message.animation:
-            await message.reply("❌ ارسال گیف مجاز نیست.")
-            return
+    # مدیریت چت هوش مصنوعی
+    if not await check_limits(user_id, "chat"):
+        await update.message.reply_text("شما به حد مجاز چت (۲۰۰ پیام در ۲۴ ساعت) رسیدید!")
+        return
+    processing_msg = await update.message.reply_text("...")
+    response = await get_chat_response(user_id, text)
+    if response:
+        await processing_msg.edit_text(response)
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$inc": {"message_count": 1}}
+        )
+        if user_id not in messages:
+            messages[user_id] = []
+        messages[user_id].append({"text": text, "timestamp": time.time(), "is_bot": False})
+        messages[user_id].append({"text": response, "timestamp": time.time(), "is_bot": True})
+    else:
+        await processing_msg.edit_text("متأسفم، مشکلی پیش اومد!")
 
-        text = message.text or "[پیام بدون متن]"
-        forward_text = f"👤 {user['name']}\n\n{text}"
+# مدیریت پیام‌های ادمین
+async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        return
+    text = update.message.text
+    if text.startswith("/ban "):
+        try:
+            target_id = int(text.split()[1])
+            users_collection.update_one(
+                {"user_id": target_id},
+                {"$set": {"is_banned": True}}
+            )
+            await update.message.reply_text(f"کاربر {target_id} بن شد.")
+        except:
+            await update.message.reply_text("لطفاً آیدی معتبر وارد کنید!")
+    elif text.startswith("/unban "):
+        try:
+            target_id = int(text.split()[1])
+            users_collection.update_one(
+                {"user_id": target_id},
+                {"$set": {"is_banned": False}}
+            )
+            await update.message.reply_text(f"کاربر {target_id} آن‌بان شد.")
+        except:
+            await update.message.reply_text("لطفاً آیدی معتبر وارد کنید!")
+    elif text.startswith("/addvip "):
+        try:
+            target_id = int(text.split()[1])
+            users_collection.update_one(
+                {"user_id": target_id},
+                {"$set": {"is_vip": True}}
+            )
+            await update.message.reply_text(f"کاربر {target_id} به ویژه‌ها اضافه شد.")
+        except:
+            await update.message.reply_text("لطفاً آیدی معتبر وارد کنید!")
+    elif text.startswith("/removevip "):
+        try:
+            target_id = int(text.split()[1])
+            users_collection.update_one(
+                {"user_id": target_id},
+                {"$set": {"is_vip": False}}
+            )
+            await update.message.reply_text(f"کاربر {target_id} از ویژه‌ها حذف شد.")
+        except:
+            await update.message.reply_text("لطفاً آیدی معتبر وارد کنید!")
+    elif text == "/stats":
+        total_users = users_collection.count_documents({})
+        banned_users = users_collection.count_documents({"is_banned": True})
+        vip_users = users_collection.count_documents({"is_vip": True})
+        await update.message.reply_text(
+            f"📊 آمار ربات:\n"
+            f"کاربران: {total_users}\n"
+            f"بن‌شده‌ها: {banned_users}\n"
+            f"ویژه‌ها: {vip_users}"
+        )
+    else:
+        # پاسخ به کاربر در حالت پشتیبانی
+        support_chat = support_chats_collection.find_one({"in_support_mode": True})
+        if support_chat:
+            target_id = support_chat["user_id"]
+            await context.bot.send_message(
+                target_id,
+                f"ارسال از صاحب ربات:\n{update.message.text}",
+                reply_to_message_id=support_chat.get("last_message_id")
+            )
+            if target_id not in messages:
+                messages[target_id] = []
+            messages[target_id].append({"text": update.message.text, "timestamp": time.time(), "is_bot": True})
 
-        for u in users.find({"banned": False}):
-            try:
-                await bot.send_message(u["_id"], forward_text)
-            except:
-                pass
+# تنظیم Webhook
+@app.route("/" + BOT_TOKEN, methods=["POST"])
+async def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    await application.process_update(update)
+    return {"status": "ok"}
 
-# پنل مدیریت (بن / آن‌بن / روشن / خاموش)
-@bot.on_message(filters.user(ADMIN_ID) & filters.reply)
-async def admin_panel(client, message):
-    cmd = message.text.lower()
-    target = message.reply_to_message.from_user.id
+# راه‌اندازی ربات
+application = Application.builder().token(BOT_TOKEN).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("image", image))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+application.add_handler(MessageHandler(filters.TEXT & filters.User(user_id=ADMIN_ID), handle_admin_message))
+application.add_handler(CallbackQueryHandler(button))
 
-    if cmd == "بن":
-        users.update_one({"_id": target}, {"$set": {"banned": True}})
-        await message.reply("❌ کاربر بن شد.")
-    elif cmd == "آنبن":
-        users.update_one({"_id": target}, {"$set": {"banned": False}})
-        await message.reply("✅ کاربر آزاد شد.")
-    elif cmd == "خاموش":
-        settings.update_one({"_id": "bot"}, {"$set": {"on": False}}, upsert=True)
-        await message.reply("🔕 ربات غیرفعال شد.")
-    elif cmd == "روشن":
-        settings.update_one({"_id": "bot"}, {"$set": {"on": True}}, upsert=True)
-        await message.reply("🔔 ربات فعال شد.")
-
-# اجرای نهایی
+# راه‌اندازی Flask
 if __name__ == "__main__":
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    bot.run()
-
-
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-    
+    application.bot.set_webhook(WEBHOOK_URL)
+    app.run(host="0.0.0.0", port=PORT)
