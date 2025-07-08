@@ -1,5 +1,4 @@
 pyTelegramBotAPI==4.13.0
-fastapi
-uvicorn
+flask
 pymongo[srv]
 dnspython
