@@ -27,9 +27,10 @@ try:
         MONGO_URI,
         tls=True,
         tlsCAFile=certifi.where(),
-        connectTimeoutMS=30000,
-        serverSelectionTimeoutMS=30000,
-        socketTimeoutMS=30000
+        connectTimeoutMS=60000,  # افزایش تایم‌اوت به 60 ثانیه
+        serverSelectionTimeoutMS=60000,
+        socketTimeoutMS=60000,
+        maxPoolSize=10
     )
     db = client["chatroom_db"]
     users_collection = db["users"]
@@ -37,8 +38,8 @@ try:
     client.admin.command('ping')  # تست اتصال
     logger.info("Successfully connected to MongoDB")
 except Exception as e:
-    logger.error(f"Failed to connect to MongoDB: {e}")
-    raise
+    logger.error(f"Failed to connect to MongoDB: {str(e)}")
+    raise SystemExit("MongoDB connection failed. Exiting...")
 
 # لیست کلمات ممنوعه برای نام کاربری
 FORBIDDEN_NAMES = {"admin", "administrator", "mod", "moderator", "support"}
@@ -104,6 +105,7 @@ def callback_query(call):
 
     elif call.data == "show_rules":
         username = user.get("username", "کاربر") if user else "کاربر"
+            username
         bot.edit_message_text(
             RULES_TEXT.format(username),
             chat_id=call.message.chat.id,
@@ -165,7 +167,7 @@ def handle_message(message):
 
     # ضد اسپم
     now = datetime.utcnow()
-    messages_collection.insert_one({
+    messages_collection.insert_one(
         "user_id": user_id,
         "timestamp": now,
         "message_id": message.message_id,
@@ -178,7 +180,7 @@ def handle_message(message):
     if recent_messages > 5:
         users_collection.update_one(
             {"user_id": user_id},
-            {"$set": {"muted_until": now - timedelta(minutes=2)}}
+            {"$set": {"muted_until": now + timedelta(minutes=2)}}
         )
         bot.reply_to(message, "شما به دلیل اسپم به مدت ۲ دقیقه محدود شدید.")
         return
@@ -270,34 +272,40 @@ def toggle_bot(message):
 
 # تابع برای پاک کردن پیام‌های قدیمی
 def clean_old_messages():
-    while True:
-        messages_collection.delete_many({"timestamp": {"$lte": datetime.utcnow() - timedelta(hours=24)}})
-        threading.Event().wait(3600)  # هر ساعت بررسی کن
+    try:
+        while True:
+            messages_collection.delete_many({"timestamp": {"$lte": datetime.utcnow() - timedelta(hours=24)}})
+            threading.Event().wait(3600)  # هر ساعت
+            logger.debug("Cleaned old messages")
+    except Exception as e:
+        logger.error(f"Error cleaning old messages: {e}")
 
-# تنظیم وب‌هوک و سرور
+# تنظیم وب‌هوک
 def start_webhook():
-    bot.remove_webhook()
-    bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-    logger.info(f"Webhook set to {WEBHOOK_URL}/{TOKEN}")
+    try:
+        bot.remove_webhook()
+        bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+        logger.info(f"Webhook set to {WEBHOOK_URL}/{TOKEN}")
 
-    class WebhookHandler(http.server.BaseHTTPRequestHandler):
-        def do_POST(self):
-            if self.path == f"/{TOKEN}":
-                content_length = int(self.headers['Content-Length'])
-                post_data = self.rfile.read(content_length)
-                update = telebot.types.Update.de_json(post_data.decode('utf-8'))
-                bot.process_new_updates([update])
-                self.send_response(200)
-                self.end_headers()
-            else:
-                self.send_response(403)
-                self.end_headers()
+        class WebhookHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                if self.path == f"/{TOKEN}":
+                    content_length = int(self.headers['Content-Length'])
+                    post_data = self.rfile.read(content_length)
+                    update = telebot.types.Update.de_json(post_data.decode('utf-8'))
+                    bot.process_new_updates([update])
+                    self.send_response(200)
+                    self.end_headers()
+                else:
+                    self.send_response(403)
+                    self.end_headers()
 
-    server = socketserver.TCPServer(("0.0.0.0", PORT), WebhookHandler)
-    server.serve_forever()
+        server = socketserver.TCPServer(("0.0.0.0", PORT), WebhookHandler)
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"Webhook setup failed: {e}")
+        raise
 
 if __name__ == "__main__":
-    # شروع تابع پاک‌سازی پیام‌ها در نخ جداگانه
     threading.Thread(target=clean_old_messages, daemon=True).start()
-    # شروع وب‌هوک
     start_webhook()
