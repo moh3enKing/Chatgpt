@@ -1,10 +1,10 @@
 import os
-import re
-import time
 from flask import Flask, request
 import telebot
 from telebot import types
 from pymongo import MongoClient
+import re
+import time
 
 # ===== تنظیمات =====
 TOKEN = "7881643365:AAEkvX2FvEBHHKvCLVLwBNiXXIidwNGwAzE"
@@ -22,18 +22,16 @@ client = MongoClient(
 db = client["chat_room"]
 users = db["users"]
 
-# ===== راه‌اندازی ربات و وب‌سرور =====
+# ===== راه‌اندازی ربات و Flask =====
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
 
-# ===== متغیرها =====
 bot_status = {"enabled": True}
-user_messages = {}  # user_id: timestamps
+user_messages = {}
 SPAM_LIMIT = 4
 SPAM_TIME = 120
 BANNED_NAMES = ["admin", "mod", "owner", "support", "ادمین", "مدیر", "پشتیبان"]
 
-# ===== توابع کمکی =====
 def is_user_in_channel(user_id):
     try:
         status = bot.get_chat_member(CHANNEL_ID, user_id).status
@@ -51,7 +49,17 @@ def extract_sender_name(text):
     match = re.search(r"<b>(.*?)</b>", text)
     return match.group(1).strip() if match else None
 
-# ===== START / ثبت‌نام =====
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "OK", 200
+
+@app.route("/", methods=["GET"])
+def index():
+    return "🤖 Bot is running!"
+
 @bot.message_handler(commands=["start"])
 def start(message):
     uid = message.from_user.id
@@ -121,7 +129,6 @@ def handle_name(m):
     )
     bot.send_message(m.chat.id, f"✅ نام {name} ثبت شد! حالا می‌تونی چت شروع کنی.")
 
-# ===== چت ناشناس + کنترل‌ها =====
 @bot.message_handler(func=lambda m: True, content_types=["text","photo","voice","audio","video","document","animation","sticker"])
 def chat(m):
     uid = m.from_user.id
@@ -138,7 +145,6 @@ def chat(m):
     if m.content_type == "animation" or (m.document and m.document.mime_type == "image/gif"):
         return bot.send_message(uid, "❌ ارسال گیف ممنوع است.")
 
-    # ضد اسپم
     now = time.time()
     timestamps = user_messages.get(uid, [])
     timestamps = [t for t in timestamps if now - t < SPAM_TIME]
@@ -171,7 +177,6 @@ def chat(m):
     elif m.content_type == "sticker":
         bot.send_sticker(m.chat.id, m.sticker.file_id)
 
-# ===== پنل ادمین =====
 @bot.message_handler(func=lambda m: m.reply_to_message and m.text.lower() in ["بن","آنبن"])
 def admin_ban(m):
     if m.from_user.id != ADMIN_ID:
@@ -195,17 +200,6 @@ def toggle(m):
         return
     bot_status["enabled"] = (m.text == "/روشن")
     bot.reply_to(m, "🟢 ربات فعال شد." if bot_status["enabled"] else "🔴 ربات خاموش شد.")
-
-# ===== webhook via Flask =====
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
-    bot.process_new_updates([update])
-    return "OK", 200
-
-@app.route("/", methods=["GET"])
-def root():
-    return "🤖 Bot is running!"
 
 if __name__ == "__main__":
     bot.remove_webhook()
