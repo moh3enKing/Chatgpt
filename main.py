@@ -12,7 +12,7 @@ FORCE_JOIN_CHANNEL = "@netgoris"
 MONGO_URI = "mongodb+srv://mohsenfeizi1386:p%40ssw0rd%2729%27%21@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 OWNER_ID = 5637609683
 WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
-PORT = int(os.environ.get("PORT", 10000))
+PORT = int(os.environ.get("PORT", 1000))
 
 app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN, skip_pending=True)
