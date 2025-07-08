@@ -1,311 +1,201 @@
 import telebot
 from telebot import types
 from pymongo import MongoClient
-from datetime import datetime, timedelta
-import re
-import threading
-import logging
-import http.server
-import socketserver
-import os
-import certifi
+import time, re
 
-# تنظیمات لاگ
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)
-logger = logging.getLogger(__name__)
-
-# تنظیمات ربات
+# تنظیمات
 TOKEN = "7881643365:AAEkvX2FvEBHHKvCLVLwBNiXXIidwNGwAzE"
+CHANNEL_ID = "@netgoris"
 ADMIN_ID = 5637609683
-MONGO_URI = "mongodb+srv://mohsenfeizi1386:p%40ssw0rd%279%27%21@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
-PORT = 1000
+DB_PASSWORD = "p%40ssw0rd%279%27%21"
 
-# تنظیمات دیتابیس با SSL و تایم‌اوت
-try:
-    client = MongoClient(
-        MONGO_URI,
-        tls=True,
-        tlsCAFile=certifi.where(),
-        connectTimeoutMS=60000,  # افزایش تایم‌اوت به 60 ثانیه
-        serverSelectionTimeoutMS=60000,
-        socketTimeoutMS=60000,
-        maxPoolSize=10
-    )
-    db = client["chatroom_db"]
-    users_collection = db["users"]
-    messages_collection = db["messages"]
-    client.admin.command('ping')  # تست اتصال
-    logger.info("Successfully connected to MongoDB")
-except Exception as e:
-    logger.error(f"Failed to connect to MongoDB: {str(e)}")
-    raise SystemExit("MongoDB connection failed. Exiting...")
+bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+client = MongoClient(f"mongodb+srv://mohsenfeizi1386:{DB_PASSWORD}@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+db = client["chat_room"]
+users = db["users"]
 
-# لیست کلمات ممنوعه برای نام کاربری
-FORBIDDEN_NAMES = {"admin", "administrator", "mod", "moderator", "support"}
+bot_status = {"enabled": True}
+user_messages = {}
+SPAM_LIMIT = 4
+SPAM_TIME = 120
+BANNED_NAMES = ["admin", "mod", "owner", "support", "ادمین", "مدیر", "پشتیبان"]
 
-# متغیر برای وضعیت ربات
-bot_active = True
+def is_user_in_channel(user_id):
+    try:
+        status = bot.get_chat_member(CHANNEL_ID, user_id).status
+        return status in ['member', 'creator', 'administrator']
+    except:
+        return False
 
-# متن قوانین
-RULES_TEXT = """
-سلام کاربر @{}  
-به ربات Chat Room خوش آمدید!  
+def is_english(text):
+    return bool(re.match(r'^[A-Za-z0-9_\-\s]+$', text))
 
-اینجا می‌توانید به‌صورت ناشناس با دیگر اعضای گروه چت کنید، با هم آشنا شوید و لذت ببرید.  
+def contains_graphic_characters(text):
+    for c in text:
+        if ord(c) > 127:
+            return True
+    return False
 
-اما قوانینی وجود دارد که باید رعایت کنید تا از ربات مسدود نشوید:  
+def extract_sender_name_from_text(text):
+    match = re.search(r"<b>(.*?)</b>", text)
+    return match.group(1).strip() if match else None
 
-1. این ربات صرفاً برای سرگرمی، چت و دوست‌یابی است. از ربات برای تبلیغات، درخواست پول یا موارد مشابه استفاده نکنید.  
-2. ارسال گیف به‌دلیل شلوغ نشدن ربات ممنوع است. اما ارسال عکس، موسیقی و موارد مشابه آزاد است، به‌شرطی که محتوای غیراخلاقی نباشد.  
-3. ربات دارای سیستم ضداسپم است. در صورت اسپم کردن، به‌مدت ۲ دقیقه محدود خواهید شد.  
-4. به یکدیگر احترام بگذارید. اگر فحاشی یا محتوای غیراخلاقی دیدید، با ریپلای روی پیام و ارسال دستور /report به ادمین اطلاع دهید.  
-
-ربات در نسخه اولیه است و آپدیت‌های جدید در راه است.  
-دوستان خود را به ربات دعوت کنید تا تجربه بهتری از چت داشته باشید.  
-موفق باشید!
-"""
-
-# ایجاد ربات
-bot = telebot.TeleBot(TOKEN)
-
-# هندلر برای دستور /start
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=["start"])
 def start(message):
     user_id = message.from_user.id
-    user = users_collection.find_one({"user_id": user_id})
+    user = users.find_one({"user_id": user_id})
 
-    if user and user.get("registered", False):
-        bot.reply_to(message, f"قبلاً ثبت‌نام کردی، خوش اومدی @{user['username']}!")
+    if user and user.get("name"):
+        bot.send_message(user_id, f"🌟 خوش آمدی مجدد {user['name']}!\nمیتونی چت رو شروع کنی.")
         return
 
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton("تأیید", callback_data="confirm_start"))
-    bot.reply_to(
-        message,
-        "لطفاً برای ادامه، یک پیام به @netgoris ارسال کنید و سپس روی دکمه تأیید کلیک کنید.",
-        reply_markup=keyboard
-    )
+    if not is_user_in_channel(user_id):
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"))
+        markup.add(types.InlineKeyboardButton("✅ تایید عضویت", callback_data="confirm_join"))
+        bot.send_message(user_id, "🔐 لطفاً ابتدا در کانال زیر عضو شوید:", reply_markup=markup)
+        return
 
-# هندلر برای دکمه‌های شیشه‌ای
-@bot.callback_query_handler(func=lambda call: True)
-def callback_query(call):
+    send_rules_confirm(message)
+
+@bot.callback_query_handler(func=lambda call: call.data == "confirm_join")
+def confirm_join(call):
     user_id = call.from_user.id
-    user = users_collection.find_one({"user_id": user_id})
-
-    if call.data == "confirm_start":
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        keyboard = types.InlineKeyboardMarkup()
-        keyboard.add(types.InlineKeyboardButton("قوانین", callback_data="show_rules"))
-        bot.send_message(
-            call.message.chat.id,
-            "آیا قوانین و مقررات را تأیید می‌کنید؟",
-            reply_markup=keyboard
-        )
-
-    elif call.data == "show_rules":
-        username = user.get("username", "کاربر") if user else "کاربر"
-            username
-        bot.edit_message_text(
-            RULES_TEXT.format(username),
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id
-        )
-        keyboard = types.InlineKeyboardMarkup()
-        keyboard.add(types.InlineKeyboardButton("تأیید قوانین", callback_data="confirm_rules"))
-        bot.send_message(
-            call.message.chat.id,
-            "لطفاً قوانین را تأیید کنید.",
-            reply_markup=keyboard
-        )
-
-    elif call.data == "confirm_rules":
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        users_collection.update_one(
-            {"user_id": user_id},
-            {"$set": {"state": "awaiting_username"}},
-            upsert=True
-        )
-        bot.send_message(
-            call.message.chat.id,
-            "لطفاً نام کاربری خود را (به انگلیسی) ارسال کنید. از اسامی مانند admin خودداری کنید."
-        )
-
-# هندلر برای پیام‌های متنی
-@bot.message_handler(content_types=['text'])
-def handle_message(message):
-    global bot_active
-    if not bot_active and message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "ربات در حال حاضر غیرفعال است.")
+    if not is_user_in_channel(user_id):
+        bot.answer_callback_query(call.id, "⛔️ هنوز عضو کانال نیستید!")
         return
+    try: bot.delete_message(call.message.chat.id, call.message.message_id)
+    except: pass
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📜 قوانین", callback_data="show_rules"))
+    bot.send_message(user_id, "📘 آیا قوانین ربات را تایید می‌کنید؟", reply_markup=markup)
 
+@bot.callback_query_handler(func=lambda call: call.data == "show_rules")
+def show_rules(call):
+    user_id = call.from_user.id
+    rules = """سلام کاربر @username
+به ربات Chat Room خوش آمدید.
+
+اینجا شما آزاد هستید که به‌صورت ناشناس با دیگر اعضای گروه در ارتباط باشید، چت کنید و با هم آشنا شوید.
+
+اما قوانینی وجود دارد که باید رعایت شوند تا از ربات مسدود نشوید:
+
+1️⃣ این ربات صرفاً برای سرگرمی و چت کردن است؛ از آن برای تبلیغات یا درخواست پول استفاده نکنید.  
+2️⃣ ارسال گیف در ربات ممنوع است. ارسال عکس و موسیقی آزاد است اما محتوای غیراخلاقی ممنوع.  
+3️⃣ ربات دارای ضد اسپم است؛ ارسال زیاد باعث سکوت ۲ دقیقه‌ای می‌شود.  
+4️⃣ به یکدیگر احترام بگذارید؛ تخلف را با ریپلای و دستور (گزارش) اطلاع دهید.
+
+📢 دوستان‌تان را به ربات دعوت کنید و لذت ببرید.
+"""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("✅ تایید قوانین")
+    bot.edit_message_text(rules.replace("@username", f"@{call.from_user.username or 'user'}"), user_id, call.message.message_id)
+    bot.send_message(user_id, "📌 لطفاً قوانین را با دکمه زیر تایید کنید:", reply_markup=markup)
+
+@bot.message_handler(func=lambda m: m.text == "✅ تایید قوانین")
+def ask_name(m):
+    markup = types.ForceReply(selective=False)
+    bot.send_message(m.chat.id, "📝 لطفاً یک نام انگلیسی برای خودتان انتخاب کنید:", reply_markup=markup)
+
+@bot.message_handler(func=lambda m: m.reply_to_message and "نام انگلیسی" in m.reply_to_message.text)
+def handle_name(m):
+    name = m.text.strip()
+    if not is_english(name):
+        return bot.send_message(m.chat.id, "❌ فقط حروف انگلیسی ساده مجاز است.")
+    if contains_graphic_characters(name):
+        return bot.send_message(m.chat.id, "⚠️ لطفاً از فونت ساده استفاده کنید.")
+    if any(b in name.lower() for b in BANNED_NAMES):
+        return bot.send_message(m.chat.id, "⛔️ این نام مجاز نیست.")
+
+    users.update_one({"user_id": m.from_user.id}, {"$set": {"user_id": m.from_user.id, "name": name, "banned": False, "muted": False}}, upsert=True)
+    bot.send_message(m.chat.id, f"✅ ثبت‌نام با نام {name} کامل شد. حالا می‌تونی پیام ارسال کنی!")
+
+@bot.message_handler(func=lambda m: True, content_types=['text', 'photo', 'voice', 'audio', 'video', 'document', 'animation', 'sticker'])
+def handle_all_messages(message):
     user_id = message.from_user.id
-    user = users_collection.find_one({"user_id": user_id})
 
-    # بررسی بن بودن کاربر
-    if user and user.get("banned", False):
-        bot.reply_to(message, "شما از ربات مسدود شده‌اید.")
+    # بررسی وضعیت ربات
+    if not bot_status["enabled"] and user_id != ADMIN_ID:
         return
 
-    # ثبت نام کاربر
-    if not user or not user.get("registered", False):
-        if user and user.get("state") == "awaiting_username":
-            username = message.text.strip()
-            if not re.match("^[a-zA-Z0-9_]+$", username):
-                bot.reply_to(message, "نام کاربری باید به انگلیسی و بدون کاراکترهای خاص باشد.")
-                return
-            if username.lower() in FORBIDDEN_NAMES:
-                bot.reply_to(message, "این نام کاربری مجاز نیست. نام دیگری انتخاب کنید.")
-                return
-            users_collection.update_one(
-                {"user_id": user_id},
-                {"$set": {"username": username, "registered": True, "state": "active"}}
-            )
-            bot.reply_to(message, f"نام کاربری @{username} ثبت شد. حالا می‌توانید چت کنید!")
-            return
-        return
+    user = users.find_one({"user_id": user_id})
+    if not user or not user.get("name"):
+        return bot.send_message(user_id, "⛔️ لطفاً ابتدا با /start ثبت‌نام کنید.")
+
+    if user.get("banned"):
+        return bot.send_message(user_id, "🚫 شما بن شده‌اید.")
+
+    # ضد گیف
+    if message.content_type == "animation" or (message.document and message.document.mime_type == "image/gif"):
+        return bot.send_message(user_id, "❌ ارسال گیف مجاز نیست.")
 
     # ضد اسپم
-    now = datetime.utcnow()
-    messages_collection.insert_one(
-        "user_id": user_id,
-        "timestamp": now,
-        "message_id": message.message_id,
-        "chat_id": message.chat.id
-    })
-    recent_messages = messages_collection.count_documents({
-        "user_id": user_id,
-        "timestamp": {"$gte": now - timedelta(seconds=10)}
-    })
-    if recent_messages > 5:
-        users_collection.update_one(
-            {"user_id": user_id},
-            {"$set": {"muted_until": now + timedelta(minutes=2)}}
-        )
-        bot.reply_to(message, "شما به دلیل اسپم به مدت ۲ دقیقه محدود شدید.")
+    now = time.time()
+    timestamps = user_messages.get(user_id, [])
+    timestamps = [t for t in timestamps if now - t < SPAM_TIME]
+    if len(timestamps) >= SPAM_LIMIT:
+        users.update_one({"user_id": user_id}, {"$set": {"muted": True}})
+        return bot.send_message(user_id, "🚷 به‌دلیل اسپم، ۲ دقیقه در سکوت هستی.")
+    user_messages[user_id] = timestamps + [now]
+    if user.get("muted"):
         return
 
-    if user.get("muted_until") and user["muted_until"] > now:
-        bot.reply_to(message, "شما موقتاً محدود شده‌اید. لطفاً کمی صبر کنید.")
-        return
+    name = user['name']
+    content = f"<b>{name}:</b>"
 
-    # ارسال پیام به همه کاربران فعال
-    username = user["username"] if user.get("registered") else "ادمین" if user_id == ADMIN_ID else "ناشناس"
-    message_text = f"@{username}: {message.text}"
+    # ریپلای
     if message.reply_to_message:
-        reply_user = users_collection.find_one({"user_id": message.reply_to_message.from_user.id})
-        reply_username = reply_user["username"] if reply_user and reply_user.get("registered") else "ناشناس"
-        message_text = f"@{username} در پاسخ به @{reply_username}: {message.text}"
+        content = "💬 پاسخ به پیام بالا\n\n" + content
 
-    active_users = users_collection.find({"registered": True, "banned": {"$ne": True}})
-    for active_user in active_users:
-        if active_user["user_id"] != user_id:
-            try:
-                bot.send_message(
-                    chat_id=active_user["user_id"],
-                    text=message_text,
-                    reply_to_message_id=message.reply_to_message.message_id if message.reply_to_message else None
-                )
-            except Exception as e:
-                logger.error(f"Error sending message to {active_user['user_id']}: {e}")
+    # نوع محتوا
+    if message.content_type == "text":
+        content += f"\n{message.text}"
+        bot.send_message(message.chat.id, content)
+    elif message.content_type == "photo":
+        bot.send_photo(message.chat.id, message.photo[-1].file_id, caption=content)
+    elif message.content_type == "voice":
+        bot.send_voice(message.chat.id, message.voice.file_id, caption=content)
+    elif message.content_type == "audio":
+        bot.send_audio(message.chat.id, message.audio.file_id, caption=content)
+    elif message.content_type == "video":
+        bot.send_video(message.chat.id, message.video.file_id, caption=content)
+    elif message.content_type == "document":
+        bot.send_document(message.chat.id, message.document.file_id, caption=content)
+    elif message.content_type == "sticker":
+        bot.send_sticker(message.chat.id, message.sticker.file_id)
 
-# هندلر برای گیف
-@bot.message_handler(content_types=['animation'])
-def handle_gif(message):
-    bot.reply_to(message, "ارسال گیف ممنوع است!")
+# ریپلای با بن / آن‌بن
+@bot.message_handler(func=lambda m: m.reply_to_message and m.text.lower() in ["بن", "آنبن"])
+def handle_ban_unban(m):
+    if m.from_user.id != ADMIN_ID:
+        return bot.reply_to(m, "⛔️ فقط ادمین.")
 
-# هندلر برای دستورات مدیریت
-@bot.message_handler(commands=['ban'])
-def ban(message):
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "فقط ادمین می‌تواند از این دستور استفاده کند.")
+    target_name = extract_sender_name_from_text(m.reply_to_message.text or m.reply_to_message.caption or "")
+    if not target_name:
+        return bot.reply_to(m, "❌ نام کاربر قابل شناسایی نیست.")
+
+    user = users.find_one({"name": target_name})
+    if not user:
+        return bot.reply_to(m, "❌ کاربر یافت نشد.")
+
+    if m.text.lower() == "بن":
+        users.update_one({"user_id": user["user_id"]}, {"$set": {"banned": True}})
+        bot.reply_to(m, f"🚫 کاربر <b>{target_name}</b> بن شد.")
+    else:
+        users.update_one({"user_id": user["user_id"]}, {"$set": {"banned": False}})
+        bot.reply_to(m, f"✅ کاربر <b>{target_name}</b> آزاد شد.")
+
+# روشن / خاموش
+@bot.message_handler(commands=["خاموش", "روشن"])
+def toggle(m):
+    if m.from_user.id != ADMIN_ID:
         return
-    if not message.reply_to_message:
-        bot.reply_to(message, "لطفاً روی پیام کاربر ریپلای کنید.")
-        return
-    target_user_id = message.reply_to_message.from_user.id
-    users_collection.update_one(
-        {"user_id": target_user_id},
-        {"$set": {"banned": True}}
-    )
-    target_user = users_collection.find_one({"user_id": target_user_id})
-    bot.reply_to(message, f"کاربر @{target_user['username']} بن شد.")
+    if m.text == "/خاموش":
+        bot_status["enabled"] = False
+        bot.reply_to(m, "🔴 ربات غیرفعال شد.")
+    else:
+        bot_status["enabled"] = True
+        bot.reply_to(m, "🟢 ربات فعال شد.")
 
-@bot.message_handler(commands=['unban'])
-def unban(message):
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "فقط ادمین می‌تواند از این دستور استفاده کند.")
-        return
-    if not message.reply_to_message:
-        bot.reply_to(message, "لطفاً روی پیام کاربر ریپلای کنید.")
-        return
-    target_user_id = message.reply_to_message.from_user.id
-    users_collection.update_one(
-        {"user_id": target_user_id},
-        {"$set": {"banned": False}}
-    )
-    target_user = users_collection.find_one({"user_id": target_user_id})
-    bot.reply_to(message, f"کاربر @{target_user['username']} آن‌بان شد.")
-
-@bot.message_handler(commands=['report'])
-def report(message):
-    if not message.reply_to_message:
-        bot.reply_to(message, "لطفاً روی پیام موردنظر ریپلای کنید.")
-        return
-    target_user_id = message.reply_to_message.from_user.id
-    target_user = users_collection.find_one({"user_id": target_user_id})
-    bot.send_message(
-        chat_id=ADMIN_ID,
-        text=f"گزارش از @{message.from_user.username}: پیام از @{target_user['username']}\nمتن: {message.reply_to_message.text}"
-    )
-    bot.reply_to(message, "گزارش شما به ادمین ارسال شد.")
-
-@bot.message_handler(commands=['toggle'])
-def toggle_bot(message):
-    global bot_active
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "فقط ادمین می‌تواند ربات را روشن یا خاموش کند.")
-        return
-    bot_active = not bot_active
-    status = "روشن" if bot_active else "خاموش"
-    bot.reply_to(message, f"ربات {status} شد.")
-
-# تابع برای پاک کردن پیام‌های قدیمی
-def clean_old_messages():
-    try:
-        while True:
-            messages_collection.delete_many({"timestamp": {"$lte": datetime.utcnow() - timedelta(hours=24)}})
-            threading.Event().wait(3600)  # هر ساعت
-            logger.debug("Cleaned old messages")
-    except Exception as e:
-        logger.error(f"Error cleaning old messages: {e}")
-
-# تنظیم وب‌هوک
-def start_webhook():
-    try:
-        bot.remove_webhook()
-        bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-        logger.info(f"Webhook set to {WEBHOOK_URL}/{TOKEN}")
-
-        class WebhookHandler(http.server.BaseHTTPRequestHandler):
-            def do_POST(self):
-                if self.path == f"/{TOKEN}":
-                    content_length = int(self.headers['Content-Length'])
-                    post_data = self.rfile.read(content_length)
-                    update = telebot.types.Update.de_json(post_data.decode('utf-8'))
-                    bot.process_new_updates([update])
-                    self.send_response(200)
-                    self.end_headers()
-                else:
-                    self.send_response(403)
-                    self.end_headers()
-
-        server = socketserver.TCPServer(("0.0.0.0", PORT), WebhookHandler)
-        server.serve_forever()
-    except Exception as e:
-        logger.error(f"Webhook setup failed: {e}")
-        raise
-
-if __name__ == "__main__":
-    threading.Thread(target=clean_old_messages, daemon=True).start()
-    start_webhook()
+# شروع ربات
+bot.infinity_polling()
