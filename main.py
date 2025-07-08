@@ -1,9 +1,9 @@
 import logging
 import asyncio
 import re
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-from urllib.parse import quote
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -13,7 +13,7 @@ from telegram.error import TelegramError
 import motor.motor_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# تنظیمات
+# Configuration
 
 TOKEN = “7881643365:AAEkvX2FvEBHHKvCLVLwBNiXXIidwNGwAzE”
 ADMIN_ID = 5637609683
@@ -21,7 +21,7 @@ CHANNEL_USERNAME = “netgoris”
 WEBHOOK_URL = “https://chatgpt-qg71.onrender.com”
 MONGODB_URI = “mongodb+srv://mohsenfeizi1386:p%40s+sw0+rd%279%27%21@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0”
 
-# تنظیمات MongoDB
+# MongoDB setup
 
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client.chatbot_db
@@ -29,14 +29,14 @@ users_collection = db.users
 messages_collection = db.messages
 settings_collection = db.settings
 
-# متغیرهای سراسری
+# Global variables
 
 bot_active = True
 user_last_message = {}
 banned_users = set()
 forbidden_names = {‘admin’, ‘administrator’, ‘moderator’, ‘mod’, ‘support’, ‘bot’, ‘chatbot’, ‘owner’, ‘root’, ‘staff’}
 
-# متن قوانین
+# Rules text
 
 RULES_TEXT = “”“سلام کاربر @{username}
 به ربات chat room خوش آمدین
@@ -59,7 +59,7 @@ RULES_TEXT = “”“سلام کاربر @{username}
 دوستان خودتون رو به ربات معرفی کنید تا تجربه بهتری در چت کردن داشته باشید
 موفق باشید”””
 
-# لاگینگ
+# Logging setup
 
 logging.basicConfig(
 format=’%(asctime)s - %(name)s - %(levelname)s - %(message)s’,
@@ -67,10 +67,10 @@ level=logging.INFO
 )
 logger = logging.getLogger(**name**)
 
-# توابع کمکی
+# Helper functions
 
 async def is_user_member(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-“”“بررسی عضویت کاربر در کانال”””
+“”“Check if user is member of channel”””
 try:
 member = await context.bot.get_chat_member(f”@{CHANNEL_USERNAME}”, user_id)
 return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
@@ -78,11 +78,11 @@ except:
 return False
 
 async def get_user_data(user_id: int) -> Optional[Dict]:
-“”“دریافت اطلاعات کاربر از دیتابیس”””
+“”“Get user data from database”””
 return await users_collection.find_one({“user_id”: user_id})
 
 async def save_user_data(user_data: Dict):
-“”“ذخیره اطلاعات کاربر در دیتابیس”””
+“”“Save user data to database”””
 await users_collection.replace_one(
 {“user_id”: user_data[“user_id”]},
 user_data,
@@ -90,16 +90,16 @@ upsert=True
 )
 
 async def get_all_users() -> List[Dict]:
-“”“دریافت همه کاربران”””
+“”“Get all users”””
 return await users_collection.find({}).to_list(None)
 
 async def is_banned(user_id: int) -> bool:
-“”“بررسی مسدود بودن کاربر”””
+“”“Check if user is banned”””
 user_data = await get_user_data(user_id)
 return user_data and user_data.get(“banned”, False)
 
 async def ban_user(user_id: int):
-“”“مسدود کردن کاربر”””
+“”“Ban user”””
 await users_collection.update_one(
 {“user_id”: user_id},
 {”$set”: {“banned”: True}},
@@ -107,7 +107,7 @@ upsert=True
 )
 
 async def unban_user(user_id: int):
-“”“رفع مسدودیت کاربر”””
+“”“Unban user”””
 await users_collection.update_one(
 {“user_id”: user_id},
 {”$set”: {“banned”: False}},
@@ -115,12 +115,12 @@ upsert=True
 )
 
 async def get_bot_status() -> bool:
-“”“دریافت وضعیت ربات”””
+“”“Get bot status”””
 settings = await settings_collection.find_one({“key”: “bot_active”})
 return settings.get(“value”, True) if settings else True
 
 async def set_bot_status(status: bool):
-“”“تنظیم وضعیت ربات”””
+“”“Set bot status”””
 await settings_collection.replace_one(
 {“key”: “bot_active”},
 {“key”: “bot_active”, “value”: status},
@@ -128,29 +128,27 @@ upsert=True
 )
 
 def is_english_only(text: str) -> bool:
-“”“بررسی انگلیسی بودن متن”””
+“”“Check if text is English only”””
 return bool(re.match(r’^[a-zA-Z0-9_]+$’, text))
 
 def has_special_fonts(text: str) -> bool:
-“”“بررسی استفاده از فونت های خاص”””
-# بررسی کاراکترهای یونیکد خاص
+“”“Check for special fonts usage”””
 special_chars = [’\u200d’, ‘\u200c’, ‘\u200b’, ‘\u2060’, ‘\u180e’]
 for char in special_chars:
 if char in text:
 return True
 
 ```
-# بررسی کاراکترهای فرمت خاص
 if any(ord(c) > 127 and not (0x0600 <= ord(c) <= 0x06FF) for c in text):
     return True
 
 return False
 ```
 
-# هندلرها
+# Handlers
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“شروع ربات”””
+“”“Start bot”””
 user_id = update.effective_user.id
 username = update.effective_user.username or “کاربر”
 
@@ -163,13 +161,13 @@ if not await get_bot_status():
     await update.message.reply_text("ربات در حال حاضر غیرفعال است.")
     return
 
-# بررسی کاربر قبلی
+# Check if user is already registered
 user_data = await get_user_data(user_id)
 if user_data and user_data.get("registered", False):
     await update.message.reply_text(f"سلام {user_data.get('display_name', username)}! قبلاً ثبت نام کرده‌اید. خوش آمدید!")
     return
 
-# بررسی عضویت در کانال
+# Check channel membership
 if not await is_user_member(user_id, context):
     keyboard = [[InlineKeyboardButton("🔗 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -179,7 +177,7 @@ if not await is_user_member(user_id, context):
         reply_markup=reply_markup
     )
     
-    # ذخیره شناسه پیام برای حذف بعدی
+    # Save message ID for later deletion
     user_temp_data = {
         "user_id": user_id,
         "join_message_id": join_message.message_id,
@@ -187,7 +185,7 @@ if not await is_user_member(user_id, context):
     }
     await save_user_data(user_temp_data)
     
-    # اضافه کردن دکمه تایید
+    # Add confirm button
     keyboard.append([InlineKeyboardButton("✅ تایید عضویت", callback_data="check_membership")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await join_message.edit_reply_markup(reply_markup=reply_markup)
@@ -196,7 +194,7 @@ else:
 ```
 
 async def check_membership_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“بررسی عضویت پس از کلیک دکمه”””
+“”“Check membership after button click”””
 query = update.callback_query
 await query.answer()
 
@@ -204,27 +202,25 @@ await query.answer()
 user_id = query.from_user.id
 
 if await is_user_member(user_id, context):
-    # حذف پیام جوین اجباری
+    # Delete join message
     try:
         await query.message.delete()
     except:
         pass
     
-    # نمایش قوانین
+    # Show rules
     await show_rules_for_user(user_id, context)
 else:
     await query.answer("هنوز در کانال عضو نشده‌اید!", show_alert=True)
 ```
 
 async def show_rules_for_user(user_id: int, context: ContextTypes.DEFAULT_TYPE):
-“”“نمایش قوانین برای کاربر خاص”””
+“”“Show rules for specific user”””
 user_data = await get_user_data(user_id)
 username = user_data.get(“username”, “کاربر”) if user_data else “کاربر”
 
 ```
-rules_text = RULES_TEXT.format(username=username)
-
-# دکمه تایید قوانین
+# Rules confirmation button
 keyboard = [[InlineKeyboardButton("✅ تایید قوانین", callback_data="accept_rules")]]
 reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -236,14 +232,12 @@ await context.bot.send_message(
 ```
 
 async def show_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“نمایش قوانین”””
+“”“Show rules”””
 user_id = update.effective_user.id
 username = update.effective_user.username or “کاربر”
 
 ```
-rules_text = RULES_TEXT.format(username=username)
-
-# دکمه‌های قوانین
+# Rules buttons
 keyboard = [
     [InlineKeyboardButton("📋 قوانین", callback_data="show_rules")],
     [InlineKeyboardButton("✅ تایید قوانین", callback_data="accept_rules")]
@@ -257,7 +251,7 @@ await update.message.reply_text(
 ```
 
 async def rules_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“نمایش قوانین با callback”””
+“”“Show rules via callback”””
 query = update.callback_query
 await query.answer()
 
@@ -267,32 +261,32 @@ username = query.from_user.username or "کاربر"
 
 rules_text = RULES_TEXT.format(username=username)
 
-# فقط متن قوانین بدون دکمه
+# Just rules text without buttons
 await query.message.edit_text(rules_text)
 ```
 
 async def accept_rules_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“تایید قوانین”””
+“”“Accept rules”””
 query = update.callback_query
 await query.answer()
 
 ```
 user_id = query.from_user.id
 
-# درخواست نام
+# Request name
 await query.message.edit_text(
     "لطفاً نام نمایشی خود را به انگلیسی وارد کنید:\n\n"
     "⚠️ نام باید به انگلیسی باشد و از کاراکترهای خاص استفاده نکنید"
 )
 
-# به‌روزرسانی وضعیت کاربر
+# Update user status
 user_data = await get_user_data(user_id) or {"user_id": user_id}
 user_data["step"] = "waiting_name"
 await save_user_data(user_data)
 ```
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“مدیریت پیام‌ها”””
+“”“Handle messages”””
 user_id = update.effective_user.id
 
 ```
@@ -303,7 +297,7 @@ if await is_banned(user_id):
 if not await get_bot_status():
     return
 
-# بررسی اسپم
+# Check spam
 now = datetime.now()
 if user_id in user_last_message:
     time_diff = now - user_last_message[user_id]
@@ -319,36 +313,36 @@ if not user_data:
     await update.message.reply_text("لطفاً ابتدا ربات را استارت کنید: /start")
     return
 
-# مراحل ثبت نام
+# Registration process
 if user_data.get("step") == "waiting_name":
     await handle_name_registration(update, context, user_data)
     return
 
-# بررسی ثبت نام کامل
+# Check if registration is complete
 if not user_data.get("registered", False):
     await update.message.reply_text("لطفاً ابتدا فرآیند ثبت نام را تکمیل کنید.")
     return
 
-# مدیریت دستورات ادمین
+# Handle admin commands
 if user_id == ADMIN_ID:
     await handle_admin_commands(update, context)
     return
 
-# بررسی گیف
+# Check for GIF
 if update.message.animation:
     await update.message.reply_text("ارسال گیف در ربات ممنوع است.")
     return
 
-# ارسال پیام به همه کاربران
+# Broadcast message to all users
 await broadcast_message(update, context)
 ```
 
 async def handle_name_registration(update: Update, context: ContextTypes.DEFAULT_TYPE, user_data: Dict):
-“”“مدیریت ثبت نام”””
+“”“Handle name registration”””
 name = update.message.text.strip()
 
 ```
-# بررسی فونت خاص
+# Check special fonts
 if has_special_fonts(name):
     await update.message.reply_text(
         "⚠️ از فونت‌های خاص یا کاراکترهای غیرمعمول استفاده نکنید.\n"
@@ -356,7 +350,7 @@ if has_special_fonts(name):
     )
     return
 
-# بررسی انگلیسی بودن
+# Check English only
 if not is_english_only(name):
     await update.message.reply_text(
         "⚠️ نام باید فقط به انگلیسی باشد.\n"
@@ -364,7 +358,7 @@ if not is_english_only(name):
     )
     return
 
-# بررسی نام‌های ممنوع
+# Check forbidden names
 if name.lower() in forbidden_names:
     await update.message.reply_text(
         "⚠️ این نام مجاز نیست.\n"
@@ -372,7 +366,7 @@ if name.lower() in forbidden_names:
     )
     return
 
-# بررسی طول نام
+# Check name length
 if len(name) < 2 or len(name) > 20:
     await update.message.reply_text(
         "⚠️ نام باید بین 2 تا 20 کاراکتر باشد.\n"
@@ -380,7 +374,7 @@ if len(name) < 2 or len(name) > 20:
     )
     return
 
-# ثبت نام موفق
+# Successful registration
 user_data["display_name"] = name
 user_data["registered"] = True
 user_data["step"] = "completed"
@@ -397,7 +391,7 @@ await update.message.reply_text(
 ```
 
 async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“ارسال پیام به همه کاربران”””
+“”“Broadcast message to all users”””
 user_id = update.effective_user.id
 user_data = await get_user_data(user_id)
 
@@ -407,7 +401,7 @@ if not user_data or not user_data.get("registered", False):
 
 display_name = user_data.get("display_name", "کاربر")
 
-# ذخیره پیام در دیتابیس
+# Save message to database
 message_data = {
     "user_id": user_id,
     "display_name": display_name,
@@ -422,7 +416,7 @@ if update.message.reply_to_message:
 
 await messages_collection.insert_one(message_data)
 
-# ارسال به همه کاربران
+# Send to all users
 users = await get_all_users()
 message_text = f"👤 {display_name}:\n{update.message.text}"
 
@@ -430,14 +424,14 @@ for user in users:
     if user["user_id"] != user_id and user.get("registered", False) and not user.get("banned", False):
         try:
             if update.message.reply_to_message:
-                # پیام ریپلای
+                # Reply message
                 await context.bot.send_message(
                     chat_id=user["user_id"],
                     text=f"↩️ پاسخ به پیام:\n{message_text}",
                     reply_to_message_id=update.message.reply_to_message.message_id
                 )
             else:
-                # پیام عادی
+                # Regular message
                 if update.message.photo:
                     await context.bot.send_photo(
                         chat_id=user["user_id"],
@@ -478,7 +472,7 @@ for user in users:
 ```
 
 async def handle_admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“مدیریت دستورات ادمین”””
+“”“Handle admin commands”””
 text = update.message.text.lower()
 
 ```
@@ -494,12 +488,12 @@ if text == "/panel":
     return
 
 if text == "بن" and update.message.reply_to_message:
-    # بن کردن کاربر
+    # Ban user
     target_user_id = update.message.reply_to_message.from_user.id
     await ban_user(target_user_id)
     await update.message.reply_text(f"کاربر {target_user_id} مسدود شد.")
     
-    # اطلاع به کاربر
+    # Notify user
     try:
         await context.bot.send_message(
             chat_id=target_user_id,
@@ -509,12 +503,12 @@ if text == "بن" and update.message.reply_to_message:
         pass
     return
 
-# ارسال پیام ادمین
+# Send admin message
 await broadcast_admin_message(update, context)
 ```
 
 async def broadcast_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“ارسال پیام ادمین به همه”””
+“”“Broadcast admin message”””
 users = await get_all_users()
 message_text = f”👑 ادمین:\n{update.message.text}”
 
@@ -531,7 +525,7 @@ for user in users:
 ```
 
 async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“مدیریت پنل ادمین”””
+“”“Handle admin panel callbacks”””
 query = update.callback_query
 await query.answer()
 
@@ -549,7 +543,7 @@ elif query.data == "bot_on":
 ```
 
 async def report_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“گزارش پیام”””
+“”“Report message”””
 if update.message.text.lower() == “گزارش” and update.message.reply_to_message:
 user_id = update.effective_user.id
 user_data = await get_user_data(user_id)
@@ -560,7 +554,7 @@ user_data = await get_user_data(user_id)
     
     reporter_name = user_data.get("display_name", "کاربر")
     
-    # ارسال گزارش به ادمین
+    # Send report to admin
     try:
         await context.bot.forward_message(
             chat_id=ADMIN_ID,
@@ -577,11 +571,11 @@ user_data = await get_user_data(user_id)
 ```
 
 def main():
-“”“اجرای ربات”””
+“”“Run the bot”””
 application = Application.builder().token(TOKEN).build()
 
 ```
-# هندلرها
+# Add handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("panel", handle_admin_commands))
 application.add_handler(CallbackQueryHandler(check_membership_callback, pattern="check_membership"))
@@ -592,7 +586,7 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_m
 application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.DOCUMENT, handle_message))
 application.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'گزارش'), report_message))
 
-# اجرای ربات
+# Run the bot
 application.run_webhook(
     listen="0.0.0.0",
     port=int(os.environ.get("PORT", 8443)),
@@ -602,5 +596,4 @@ application.run_webhook(
 ```
 
 if **name** == ‘**main**’:
-import os
 main()
