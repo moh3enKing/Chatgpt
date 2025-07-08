@@ -8,9 +8,10 @@ import logging
 import http.server
 import socketserver
 import os
+import certifi
 
 # تنظیمات لاگ
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # تنظیمات ربات
@@ -20,11 +21,24 @@ MONGO_URI = "mongodb+srv://mohsenfeizi1386:p%40ssw0rd%279%27%21@cluster0.ounkvru
 WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
 PORT = 1000
 
-# تنظیمات دیتابیس
-client = MongoClient(MONGO_URI)
-db = client["chatroom_db"]
-users_collection = db["users"]
-messages_collection = db["messages"]
+# تنظیمات دیتابیس با SSL و تایم‌اوت
+try:
+    client = MongoClient(
+        MONGO_URI,
+        tls=True,
+        tlsCAFile=certifi.where(),
+        connectTimeoutMS=30000,
+        serverSelectionTimeoutMS=30000,
+        socketTimeoutMS=30000
+    )
+    db = client["chatroom_db"]
+    users_collection = db["users"]
+    messages_collection = db["messages"]
+    client.admin.command('ping')  # تست اتصال
+    logger.info("Successfully connected to MongoDB")
+except Exception as e:
+    logger.error(f"Failed to connect to MongoDB: {e}")
+    raise
 
 # لیست کلمات ممنوعه برای نام کاربری
 FORBIDDEN_NAMES = {"admin", "administrator", "mod", "moderator", "support"}
@@ -112,7 +126,7 @@ def callback_query(call):
         )
         bot.send_message(
             call.message.chat.id,
-            "لطفاً نام کاریری خود را (به انگلیسی) ارسال کنید. از اسامی مانند admin خودداری کنید."
+            "لطفاً نام کاربری خود را (به انگلیسی) ارسال کنید. از اسامی مانند admin خودداری کنید."
         )
 
 # هندلر برای پیام‌های متنی
@@ -164,7 +178,7 @@ def handle_message(message):
     if recent_messages > 5:
         users_collection.update_one(
             {"user_id": user_id},
-            {"$set": {"muted_until": now + timedelta(minutes=2)}}
+            {"$set": {"muted_until": now - timedelta(minutes=2)}}
         )
         bot.reply_to(message, "شما به دلیل اسپم به مدت ۲ دقیقه محدود شدید.")
         return
@@ -181,7 +195,7 @@ def handle_message(message):
         reply_username = reply_user["username"] if reply_user and reply_user.get("registered") else "ناشناس"
         message_text = f"@{username} در پاسخ به @{reply_username}: {message.text}"
 
-    active_users = users_collection.find({"registered": True})
+    active_users = users_collection.find({"registered": True, "banned": {"$ne": True}})
     for active_user in active_users:
         if active_user["user_id"] != user_id:
             try:
