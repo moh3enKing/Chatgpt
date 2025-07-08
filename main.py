@@ -12,7 +12,7 @@ FORCE_JOIN_CHANNEL = "@netgoris"
 MONGO_URI = "mongodb+srv://mohsenfeizi1386:p%40ssw0rd%2729%27%21@cluster0.ounkvru.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 OWNER_ID = 5637609683
 WEBHOOK_URL = "https://chatgpt-qg71.onrender.com"
-PORT = int(os.environ.get("PORT", 1000))
+PORT = int(os.environ.get("PORT", 10000))
 
 app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN, skip_pending=True)
@@ -81,18 +81,17 @@ def show_rules_button(chat_id):
 
 @bot.callback_query_handler(func=lambda c: c.data == "show_rules")
 def show_rules(call):
-    rules = f"""
-سلام کاربر @{call.from_user.username or 'ناشناس'}  
-به ربات Chat Room خوش اومدی 🌟
+    rules = """
+👋 سلام! خوش اومدی.
 
-اینجا آزادی که ناشناس چت کنی، اما این قوانین رو رعایت کن:
+🔹 اینجا یه چت‌روم نیمه‌ناشناس برای گپ دوستانه‌ست. قوانین:
 
-1» ربات فقط برای چت دوستانه‌ست، تبلیغات ممنوع  
-2» ارسال گیف ممنوع، عکس و آهنگ سالم مجاز  
-3» اسپم = سکوت ۲ دقیقه  
-4» احترام متقابل، توهین = گزارش با دستور "گزارش" ✅
+1️⃣ فقط گفت‌وگوی سالم؛ تبلیغ ممنوع  
+2️⃣ گیف = ممنوع | عکس، آهنگ = اوکی  
+3️⃣ اسپم = سکوت ۲ دقیقه  
+4️⃣ احترام واجبه. تخلف → ریپورت با "گزارش"
 
-⛑ این نسخه اولیه‌ست؛ آپدیت‌ها در راهن!
+✅ بیا یک اسم انگلیسی وارد کن و شروع کنیم!
 """
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ تایید قوانین", callback_data="accept_rules"))
@@ -100,21 +99,21 @@ def show_rules(call):
 
 @bot.callback_query_handler(func=lambda c: c.data == "accept_rules")
 def ask_name(call):
-    bot.send_message(call.message.chat.id, "📝 لطفاً یک نام فقط انگلیسی وارد کن (نباید 'admin' توش باشه):")
+    bot.send_message(call.message.chat.id, "📝 یه نام فقط انگلیسی بنویس (نباید 'admin' توش باشه):")
     bot.register_next_step_handler(call.message, name_step)
 
 def name_step(msg):
     name = msg.text.strip()
     if not is_name_valid(name):
-        bot.send_message(msg.chat.id, "❌ فقط حروف انگلیسی مجازن و نباید 'admin' داشته باشه.")
+        bot.send_message(msg.chat.id, "❌ فقط حروف انگلیسی مجازن و 'admin' نباید باشه.")
         bot.register_next_step_handler(msg, name_step)
         return
     if is_name_taken(name):
-        bot.send_message(msg.chat.id, "❌ این اسم قبلاً انتخاب شده. یکی دیگه وارد کن:")
+        bot.send_message(msg.chat.id, "❌ این اسم تکراریه. یکی دیگه انتخاب کن:")
         bot.register_next_step_handler(msg, name_step)
         return
     save_user(msg.from_user.id, msg.from_user.username, name)
-    bot.send_message(msg.chat.id, f"✅ نام {name} با موفقیت ثبت شد. خوش اومدی!")
+    bot.send_message(msg.chat.id, f"✅ خوش اومدی {name}!")
 
 @bot.message_handler(content_types=['text', 'photo', 'audio', 'document', 'video'])
 def handle_messages(msg):
@@ -128,12 +127,12 @@ def handle_messages(msg):
     spam_tracker[uid] = [t for t in spam_tracker[uid] if now - t < 1]
     if len(spam_tracker[uid]) > 3:
         mute_until[uid] = now + 120
-        bot.send_message(msg.chat.id, "⛔️ اسپم ممنوع! ۲ دقیقه سایلنت شدی.")
+        bot.send_message(msg.chat.id, "⛔️ اسپم = سکوت ۲ دقیقه")
         return
 
     user = db.users.find_one({"user_id": uid})
     name = user["display_name"] if user else "ناشناس"
-    stored_messages[msg.message_id] = {"text": msg.text if msg.text else "ارسال رسانه", "name": name}
+    stored_messages[msg.message_id] = {"text": msg.text if msg.text else "رسانه", "name": name}
 
     if msg.reply_to_message and msg.reply_to_message.message_id in stored_messages:
         quoted = stored_messages[msg.reply_to_message.message_id]
@@ -178,7 +177,7 @@ def toggle_bot(m):
     if m.from_user.id != OWNER_ID:
         return
     bot_enabled = m.text == "/on"
-    bot.send_message(m.chat.id, f"⚙️ ربات الان {'فعاله' if bot_enabled else 'غیرفعاله'}")
+    bot.send_message(m.chat.id, f"⚙️ ربات الان {'فعاله ✅' if bot_enabled else 'خاموشه 📴'}")
 
 @app.route(f'/{BOT_TOKEN}', methods=["POST"])
 def webhook():
