@@ -1,7 +1,7 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes
-from telegram.ext.filters import Filters  # اصلاح import
+from telegram.ext.filters import Text  # اصلاح import
 import requests
 from pymongo import MongoClient
 from datetime import datetime, timedelta
@@ -189,7 +189,7 @@ async def webhook(request):
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(verify_membership, pattern="verify_membership"))
-    application.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    application.add_handler(MessageHandler(Text() & ~filters.Command(), handle_message))  # اصلاح فیلتر
     
     try:
         data = await request.json()
