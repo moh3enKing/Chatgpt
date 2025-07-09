@@ -1,6 +1,7 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes
+from telegram.ext.filters import Filters  # اصلاح import
 import requests
 from pymongo import MongoClient
 from datetime import datetime, timedelta
@@ -212,7 +213,9 @@ async def main():
     await site.start()
     logger.info(f"Server running on port {PORT}")
     
-# راه‌اندازی Flask
+    # نگه داشتن سرور در حال اجرا
+    while True:
+        await asyncio.sleep(3600)
+
 if __name__ == "__main__":
-    application.bot.set_webhook(WEBHOOK_URL)
-    app.run(host="0.0.0.0", port=10000)
+    asyncio.run(main())
