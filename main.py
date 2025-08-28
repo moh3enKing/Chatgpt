@@ -3,14 +3,15 @@ import requests
 from telebot import TeleBot, types
 from flask import Flask, request
 
-TOKEN = "توکن_ربات_تو_اینجا_بزار"
+# توکن ربات (درست و واقعی)
+TOKEN = "8089258024:AAFx2ieX_ii_TrI60wNRRY7VaLHEdD3-BP0"
 bot = TeleBot(TOKEN)
 app = Flask(__name__)
 
 PORT = int(os.environ.get("PORT", 1000))
 
 # ======== مدیریت زبان ========
-user_language = {}  # ذخیره زبان کاربر
+user_language = {}
 
 LANGUAGES = {
     "فارسی": "fa",
@@ -35,7 +36,7 @@ def start(message):
     markup = types.InlineKeyboardMarkup()
     for lang in LANGUAGES.keys():
         markup.add(types.InlineKeyboardButton(text=lang, callback_data=f"lang_{lang}"))
-    bot.send_message(chat_id, "سلام! لطفاً زبان خود را انتخاب کنید:", reply_markup=markup)
+    bot.send_message(chat_id, "🌍 لطفاً زبان خود را انتخاب کنید:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("lang_"))
 def language_choice(call):
@@ -45,55 +46,42 @@ def language_choice(call):
                           message_id=call.message.message_id,
                           text=MESSAGES[LANGUAGES[lang]]["instruction"])
 
-# ======== جستجوی آهنگ ========
-# لیست سایت‌ها (نمونه، باید API یا Web Scraping واقعی داشته باشی)
-IRANIAN_SITES = [
-    "https://www.radiojavan.com/api/search?q={}",
-    "https://www.beeptunes.com/api/search?q={}",
-    "https://www.persianmusic.com/api/search?q={}"
-]
-
-INTERNATIONAL_SITES = [
-    "https://api.soundcloud.com/tracks?q={}&client_id=CLIENT_ID",
-    "https://api.spotify.com/v1/search?q={}&type=track",
-    "https://api.jamendo.com/v3.0/tracks/?client_id=CLIENT_ID&format=json&name={}"
-]
-
+# ======== جستجوی آهنگ (نمونه تستی) ========
 def search_music(query):
-    results = []
-    # این قسمت نمونه هست و باید با API واقعی جایگزین شود
-    for site in IRANIAN_SITES + INTERNATIONAL_SITES:
-        url = site.format(query)
-        try:
-            resp = requests.get(url, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                # فرض کنیم data لیستی از آهنگ‌ها با keys: title, artist, year, cover, mp3
-                for track in data.get("tracks", []):
-                    results.append(track)
-        except:
-            continue
-    return results[:10]  # فقط ۱۰ نتیجه اول
+    # 🔴 فعلاً نتایج تستی برمی‌گردونیم
+    # بعد میشه وصلش کرد به API سایت‌های واقعی
+    results = [
+        {
+            "title": "Sample Song",
+            "artist": "Test Artist",
+            "year": "2025",
+            "cover": "https://upload.wikimedia.org/wikipedia/commons/4/4f/Musical_notes.png",
+            "mp3": "https://filesamples.com/samples/audio/mp3/sample3.mp3"
+        }
+    ]
+    return results
 
 @bot.message_handler(func=lambda m: True)
 def handle_search(message):
     query = message.text
     chat_id = message.chat.id
-    msg = bot.send_message(chat_id, "در حال جستجو…")
+    msg = bot.send_message(chat_id, "🔎 در حال جستجو...")
     tracks = search_music(query)
     bot.delete_message(chat_id, msg.message_id)
 
     if not tracks:
-        bot.send_message(chat_id, "هیچ آهنگی پیدا نشد.")
+        bot.send_message(chat_id, "❌ هیچ آهنگی پیدا نشد.")
         return
 
     for track in tracks:
-        caption = f"{track.get('title')} - {track.get('artist')} ({track.get('year')})\n@Tellgptvip_bot"
+        caption = f"{track.get('title')} - {track.get('artist')} ({track.get('year')})\n🎵 @Tellgptvip_bot"
         try:
             bot.send_photo(chat_id, track.get("cover"), caption=caption)
-            bot.send_audio(chat_id, track.get("mp3"), title=track.get('title'), performer=track.get('artist'))
-        except:
-            continue
+            bot.send_audio(chat_id, track.get("mp3"),
+                           title=track.get('title'),
+                           performer=track.get('artist'))
+        except Exception as e:
+            bot.send_message(chat_id, f"⚠️ خطا در ارسال آهنگ: {e}")
 
 # ======== Flask برای Render ========
 @app.route(f"/{TOKEN}", methods=['POST'])
@@ -105,10 +93,10 @@ def webhook():
 
 @app.route("/")
 def index():
-    return "Bot is running"
+    return "Bot is running ✅"
 
 # ======== راه‌اندازی Webhook ========
 if __name__ == "__main__":
     bot.remove_webhook()
-    bot.set_webhook(url=f"https://YOUR_RENDER_APP_NAME.onrender.com/{TOKEN}")
+    bot.set_webhook(url=f"https://chatgpt-qg71.onrender.com/{TOKEN}")
     app.run(host="0.0.0.0", port=PORT)
