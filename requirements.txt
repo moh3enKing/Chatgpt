@@ -1,1 +1,5 @@
-pip install python-telegram-bot flask beautifulsoup4 requests
+python-telegram-bot==20.3
+flask==2.3.3
+beautifulsoup4==4.12.2
+requests==2.31.0
+
