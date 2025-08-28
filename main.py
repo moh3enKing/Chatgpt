@@ -55,7 +55,7 @@ async def start(client, message):
     )
 
 # --- دستور تنظیم کانال مبدا ---
-@app.on_message(filters.text & ~filters.command())
+@app.on_message(filters.text & ~filters.command)
 async def set_source(client, message):
     global source_channel
     if message.text.startswith("@") or message.text.startswith("-100"):
