@@ -74,12 +74,19 @@ def scrape_radiojavan(query):
     try:
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
-        songs = soup.find_all('li', class_='mp3')
-        for song in songs[:5]:
-            title = song.find('div', class_='song_name').text.strip() if song.find('div', class_='song_name') else 'Unknown'
-            artist = song.find('div', class_='artist_name').text.strip() if song.find('div', class_='artist_name') else 'Unknown'
-            cover = song.find('img')['src'] if song.find('img') else 'https://example.com/default.jpg'
-            mp3 = song.find('a', class_='download_song')['href'] if song.find('a', class_='download_song') else ''
+        songs = soup.find_all('li', class_='mp3') or soup.find_all('div', class_='song_item')
+        if not songs:
+            print("No songs found in Radio Javan")
+            return results
+        for song in songs:
+            title = song.find('div', class_='song_name')
+            title = title.text.strip() if title else 'Unknown'
+            artist = song.find('div', class_='artist_name')
+            artist = artist.text.strip() if artist else 'Unknown'
+            cover = song.find('img')
+            cover = cover['src'] if cover and cover.get('src') else 'https://example.com/default.jpg'
+            mp3 = song.find('a', class_='download_song')
+            mp3 = mp3['href'] if mp3 and mp3.get('href') else ''
             year = 'Unknown'
             if mp3.startswith('/'):
                 mp3 = f"https://radiojavan.com{mp3}"
@@ -95,12 +102,19 @@ def scrape_navahang(query):
     try:
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
-        songs = soup.find_all('div', class_='track-item')
-        for song in songs[:5]:
-            title = song.find('h3').text.strip() if song.find('h3') else 'Unknown'
-            artist = song.find('p', class_='artist').text.strip() if song.find('p', class_='artist') else 'Unknown'
-            cover = song.find('img')['src'] if song.find('img') else 'https://example.com/default.jpg'
-            mp3 = song.find('a', class_='download')['href'] if song.find('a', class_='download') else ''
+        songs = soup.find_all('div', class_='track-item') or soup.find_all('li', class_='song')
+        if not songs:
+            print("No songs found in Navahang")
+            return results
+        for song in songs:
+            title = song.find('h3')
+            title = title.text.strip() if title else 'Unknown'
+            artist = song.find('p', class_='artist')
+            artist = artist.text.strip() if artist else 'Unknown'
+            cover = song.find('img')
+            cover = cover['src'] if cover and cover.get('src') else 'https://example.com/default.jpg'
+            mp3 = song.find('a', class_='download')
+            mp3 = mp3['href'] if mp3 and mp3.get('href') else ''
             year = 'Unknown'
             if mp3.startswith('/'):
                 mp3 = f"https://navahang.com{mp3}"
@@ -116,13 +130,21 @@ def scrape_musicfa(query):
     try:
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
-        songs = soup.find_all('div', class_='post')
-        for song in songs[:5]:
-            title = song.find('h2').text.strip() if song.find('h2') else 'Unknown'
-            artist = song.find('span', class_='artist').text.strip() if song.find('span', class_='artist') else 'Unknown'
-            cover = song.find('img')['src'] if song.find('img') else 'https://example.com/default.jpg'
-            mp3 = song.find('a', class_='download')['href'] if song.find('a', class_='download') else ''
-            year = song.find('span', class_='year').text.strip() if song.find('span', class_='year') else 'Unknown'
+        songs = soup.find_all('div', class_='post') or soup.find_all('article')
+        if not songs:
+            print("No songs found in Musicfa")
+            return results
+        for song in songs:
+            title = song.find('h2')
+            title = title.text.strip() if title else 'Unknown'
+            artist = song.find('span', class_='artist')
+            artist = artist.text.strip() if artist else 'Unknown'
+            cover = song.find('img')
+            cover = cover['src'] if cover and cover.get('src') else 'https://example.com/default.jpg'
+            mp3 = song.find('a', class_='download')
+            mp3 = mp3['href'] if mp3 and mp3.get('href') else ''
+            year = song.find('span', class_='year')
+            year = year.text.strip() if year else 'Unknown'
             if mp3.startswith('/'):
                 mp3 = f"https://music-fa.com{mp3}"
             results.append({'title': title, 'artist': artist, 'year': year, 'cover': cover, 'mp3': mp3})
@@ -137,12 +159,19 @@ def scrape_genius(query):
     try:
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
-        songs = soup.find_all('div', class_='mini-card')
-        for song in songs[:5]:
-            title = song.find('span', class_='song_title').text.strip() if song.find('span', class_='song_title') else 'Unknown'
-            artist = song.find('span', class_='artist_name').text.strip() if song.find('span', class_='artist_name') else 'Unknown'
-            cover = song.find('img')['src'] if song.find('img') else 'https://example.com/default.jpg'
-            year = song.find('span', class_='year').text.strip() if song.find('span', class_='year') else 'Unknown'
+        songs = soup.find_all('div', class_='mini-card') or soup.find_all('runninhead-song-hit')
+        if not songs:
+            print("No songs found in Genius")
+            return results
+        for song in songs:
+            title = song.find('span', class_='song_title')
+            title = title.text.strip() if title else 'Unknown'
+            artist = song.find('span', class_='artist_name')
+            artist = artist.text.strip() if artist else 'Unknown'
+            cover = song.find('img')
+            cover = cover['src'] if cover and cover.get('src') else 'https://example.com/default.jpg'
+            year = song.find('span', class_='year')
+            year = year.text.strip() if year else 'Unknown'
             mp3 = ''
             results.append({'title': title, 'artist': artist, 'year': year, 'cover': cover, 'mp3': mp3})
     except Exception as e:
@@ -156,12 +185,19 @@ def scrape_soundcloud(query):
     try:
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
-        songs = soup.find_all('li', class_='searchList__item')
-        for song in songs[:5]:
-            title = song.find('a', class_='soundTitle__title').text.strip() if song.find('a', class_='soundTitle__title') else 'Unknown'
-            artist = song.find('a', class_='soundTitle__username').text.strip() if song.find('a', class_='soundTitle__username') else 'Unknown'
-            cover = song.find('img')['src'] if song.find('img') else 'https://example.com/default.jpg'
-            mp3 = song.find('a')['href'] if song.find('a') else ''
+        songs = soup.find_all('li', class_='searchList__item') or soup.find_all('div', class_='sound')
+        if not songs:
+            print("No songs found in SoundCloud")
+            return results
+        for song in songs:
+            title = song.find('a', class_='soundTitle__title')
+            title = title.text.strip() if title else 'Unknown'
+            artist = song.find('a', class_='soundTitle__username')
+            artist = artist.text.strip() if artist else 'Unknown'
+            cover = song.find('img')
+            cover = cover['src'] if cover and cover.get('src') else 'https://example.com/default.jpg'
+            mp3 = song.find('a')
+            mp3 = mp3['href'] if mp3 and mp3.get('href') else ''
             year = 'Unknown'
             if mp3.startswith('/'):
                 mp3 = f"https://soundcloud.com{mp3}"
@@ -177,11 +213,17 @@ def scrape_lastfm(query):
     try:
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
-        songs = soup.find_all('td', class_='chartlist-name')
-        for song in songs[:5]:
-            title = song.find('a').text.strip() if song.find('a') else 'Unknown'
-            artist = song.find_next_sibling('td', class_='chartlist-artist').find('a').text.strip() if song.find_next_sibling('td', class_='chartlist-artist') else 'Unknown'
-            cover = 'https://example.com/default.jpg'
+        songs = soup.find_all('td', class_='chartlist-name') or soup.find_all('div', class_='search-result')
+        if not songs:
+            print("No songs found in Last.fm")
+            return results
+        for song in songs:
+            title = song.find('a')
+            title = title.text.strip() if title else 'Unknown'
+            artist = song.find_next_sibling('td', class_='chartlist-artist')
+            artist = artist.find('a').text.strip() if artist and artist.find('a') else 'Unknown'
+            cover = song.find('img')
+            cover = cover['src'] if cover and cover.get('src') else 'https://example.com/default.jpg'
             mp3 = ''
             year = 'Unknown'
             results.append({'title': title, 'artist': artist, 'year': year, 'cover': cover, 'mp3': mp3})
@@ -338,10 +380,14 @@ async def song_select(update: Update, context: CallbackContext):
         if idx < len(results):
             res = results[idx]
             caption_photo = TRANSLATIONS[lang]['caption_photo'].format(song=res['title'], artist=res['artist'], year=res['year'])
-            await query.message.reply_photo(photo=res['cover'], caption=caption_photo)
-            
-            caption_audio = TRANSLATIONS[lang]['caption_audio']
-            await query.message.reply_audio(audio=res['mp3'], caption=caption_audio, title=res['title'])
+            try:
+                await query.message.reply_photo(photo=res['cover'], caption=caption_photo)
+                if res['mp3']:
+                    caption_audio = TRANSLATIONS[lang]['caption_audio']
+                    await query.message.reply_audio(audio=res['mp3'], caption=caption_audio, title=res['title'])
+            except Exception as e:
+                print(f"Error sending media: {e}")
+                await query.message.reply_text("Error sending song. Please try another.")
     
     elif data.startswith('more_'):
         page = int(data.split('_')[1])
