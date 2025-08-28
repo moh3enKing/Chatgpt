@@ -1,107 +1,89 @@
-import re
-import time
 import asyncio
-from pyrogram import Client, filters
-from pyrogram.errors import FloodWait
+import re
+from telethon import TelegramClient, events
+from telethon.sessions import StringSession
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ChatMemberHandler
 
-# --- تنظیمات کامل ---
+# تنظیمات
 API_ID = 2040
-API_HASH = "b18441a1ff607e10a989891a5462e627"
-BOT_TOKEN = "8175470749:AAGjaYSVosmfk6AmuqXvcVbSUJAqS200q3c"
+API_HASH = 'b18441a1ff607e10a989891a5462e627'
+BOT_TOKEN = '8175470749:AAGjaYSVosmfk6AmuqXvcVbSUJAqS200q3c'
+TAG = '@netgoris'
 
-# کانال مقصد ثابت
-DEST_CHANNEL = "@netgoris"
+# متغیرهای جهانی
+SOURCE_CHANNEL = None
+DESTINATION_CHANNEL = None
+client = None
 
-# کانال مبدا (بعداً با دستور ست میشه)
-source_channel = None
+async def init_telethon():
+    global client
+    client = TelegramClient(StringSession(), API_ID, API_HASH)
+    await client.start()
+    print("Telethon client started.")
 
-# وضعیت ربات (خاموش/روشن)
-running = True
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[KeyboardButton("تنظیم کانال مبدا")]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("سلام! برای تنظیم کانال مبدا، دکمه زیر رو بزنید.", reply_markup=reply_markup)
 
-# ساخت کلاینت Pyrogram
-app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global SOURCE_CHANNEL
+    text = update.message.text
+    if text == "تنظیم کانال مبدا":
+        await update.message.reply_text("لطفاً آیدی کانال مبدا رو بفرستید (مثل @channelusername)")
+    elif text.startswith('@'):
+        SOURCE_CHANNEL = text
+        await update.message.reply_text(f"کانال مبدا تنظیم شد: {SOURCE_CHANNEL}")
+        # شروع job برای چک هر 5 دقیقه
+        context.job_queue.run_repeating(check_and_post_config, interval=300, first=10, data=update.message.chat_id)
 
-# --- تابع تشخیص کانفیگ ---
-def extract_configs(text: str):
-    configs = []
-    if not text:
-        return configs
-    lines = text.splitlines()
-    for line in lines:
-        line = line.strip()
-        if line.startswith(("vless://", "vmess://", "ss://", "trojan://")):
-            # حذف همه تگ‌های @
-            clean = re.sub(r'@\w+', '', line).strip()
-            configs.append(clean)
-    return configs
+async def track_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global DESTINATION_CHANNEL
+    my_chat_member = update.my_chat_member
+    if my_chat_member.new_chat_member.user.is_self and my_chat_member.new_chat_member.status in ['member', 'administrator']:
+        DESTINATION_CHANNEL = my_chat_member.chat.id
+        print(f"کانال مقصد تنظیم شد: {DESTINATION_CHANNEL}")
 
-# --- پردازش پیام ---
-def process_message(msg_text):
-    configs = extract_configs(msg_text)
-    if not configs:
-        return None
-    result = "\n".join(configs)
-    result += "\n@netgoris\n\n@netgoris"
-    return result
+async def check_and_post_config(context: ContextTypes.DEFAULT_TYPE):
+    if SOURCE_CHANNEL is None or DESTINATION_CHANNEL is None or client is None:
+        return
+    try:
+        entity = await client.get_entity(SOURCE_CHANNEL)
+        async for message in client.iter_messages(entity, limit=50):  # چک تا 50 پیام آخر
+            if message.text and is_v2ray_config(message.text):
+                config = extract_config(message.text)
+                cleaned_config = clean_and_replace_tags(config)
+                final_message = f"{cleaned_config}\n\n{DESTINATION_CHANNEL}\n{TAG}"
+                await context.bot.send_message(chat_id=DESTINATION_CHANNEL, text=final_message)
+                break  # فقط آخرین کانفیگ معتبر رو پست کن
+    except Exception as e:
+        print(f"خطا: {e}")
 
-# --- دستور استارت ---
-@app.on_message(filters.command("start"))
-async def start(client, message):
-    await message.reply(
-        "سلام 👋\nبا این ربات میتونی کانال مبدا رو ست کنی تا هر ۵ دقیقه آخرین کانفیگ‌هاشو بفرستم توی @netgoris ✅\n"
-        "دستورات:\n"
-        "/stop - خاموش کردن بررسی کانال\n"
-        "/startcheck - روشن کردن بررسی کانال"
-    )
+def is_v2ray_config(text: str) -> bool:
+    # تشخیص اگر شامل vmess:// یا vless:// یا ss:// باشه
+    return bool(re.search(r'(vmess|vless|ss)://', text, re.IGNORECASE))
 
-# --- دستور تنظیم کانال مبدا ---
-@app.on_message(filters.text & ~filters.command)
-async def set_source(client, message):
-    global source_channel
-    if message.text.startswith("@") or message.text.startswith("-100"):
-        source_channel = message.text.strip()
-        await message.reply(f"کانال مبدا تنظیم شد: {source_channel}")
+def extract_config(text: str) -> str:
+    # استخراج فقط قسمت‌های کانفیگ (لینک‌ها)
+    configs = re.findall(r'(vmess|vless|ss)://[^\s]+', text, re.IGNORECASE)
+    return '\n'.join(configs) if configs else ''
 
-# --- دستور خاموش کردن بررسی ---
-@app.on_message(filters.command("stop"))
-async def stop_check(client, message):
-    global running
-    running = False
-    await message.reply("بررسی کانال متوقف شد ✅")
+def clean_and_replace_tags(config: str) -> str:
+    # جایگزینی همه تگ‌های @username با @netgoris
+    return re.sub(r'@\w+', TAG, config)
 
-# --- دستور روشن کردن بررسی ---
-@app.on_message(filters.command("startcheck"))
-async def start_check(client, message):
-    global running
-    running = True
-    await message.reply("بررسی کانال روشن شد ✅")
+def main():
+    # شروع Telethon در background
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(init_telethon())
 
-# --- بک‌گراند برای بررسی پیام‌ها ---
-async def background_worker():
-    global source_channel, running
-    last_sent = None
-    while True:
-        try:
-            if running and source_channel:
-                async for msg in app.get_chat_history(source_channel, limit=20):
-                    if msg.text:
-                        processed = process_message(msg.text)
-                        if processed and processed != last_sent:
-                            await app.send_message(DEST_CHANNEL, processed)
-                            last_sent = processed
-                            break
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-        except Exception as e:
-            print("Error in background_worker:", e)
-        await asyncio.sleep(300)  # هر ۵ دقیقه
+    # شروع Bot
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(ChatMemberHandler(track_channels, ChatMemberHandler.MY_CHAT_MEMBER))
+    app.run_polling()
 
-# --- ران ---
-async def main():
-    await app.start()
-    asyncio.create_task(background_worker())
-    print("Bot is running...")
-    await asyncio.get_event_loop().create_future()  # برای زنده نگه داشتن
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    main()
