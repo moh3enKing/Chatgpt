@@ -46,7 +46,7 @@ def process_message(msg_text):
 
 # --- دستور استارت ---
 @app.on_message(filters.command("start"))
-async def start(message):
+async def start(client, message):
     await message.reply(
         "سلام 👋\nبا این ربات میتونی کانال مبدا رو ست کنی تا هر ۵ دقیقه آخرین کانفیگ‌هاشو بفرستم توی @netgoris ✅\n"
         "دستورات:\n"
@@ -55,7 +55,7 @@ async def start(message):
     )
 
 # --- دستور تنظیم کانال مبدا ---
-@app.on_message(filters.text & ~filters.command)
+@app.on_message(filters.text & ~filters.command())
 async def set_source(client, message):
     global source_channel
     if message.text.startswith("@") or message.text.startswith("-100"):
